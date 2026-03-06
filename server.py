@@ -16,8 +16,14 @@ from scipy.sparse.csgraph import shortest_path
 from itertools import combinations
 from collections import Counter
 from math import factorial
+from supabase import create_client
 
 logging.basicConfig(level=logging.INFO)
+
+# ── Supabase ─────────────────────────────────────────────────
+SUPABASE_URL = "https://tcyapfwczeuhcqecxpdi.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRjeWFwZndjemV1aGNxZWN4cGRpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI3NjczMDUsImV4cCI6MjA4ODM0MzMwNX0.b5oXpe23asLqGLCnHkXLf9LB2W6OoH7nBwkBN0n6dZA"
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 PORT = 3000
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -424,9 +430,71 @@ def action_advanced(body):
             "graphMetrics": graph, "labels": labels}
 
 
+# ── Supabase CRUD actions ────────────────────────────────────
+
+def action_save(body):
+    """Save analysis results to Supabase vital_items table."""
+    row = {
+        "file_name": body.get("fileName", "unknown"),
+        "eeg_labels": body.get("eegLabels", []),
+        "track_names": body.get("trackNames", []),
+        "events": body.get("events", []),
+        "duration_sec": body.get("durationSec", 0),
+        "n_samples": body.get("nSamples", {}),
+        "numeric_preview": body.get("numericPreview", {}),
+        "spectrum_result": body.get("spectrumResult"),
+        "connectivity_result": body.get("connectivityResult"),
+        "advanced_result": body.get("advancedResult"),
+        "memo": body.get("memo", ""),
+    }
+    result = supabase.table("vital_items").insert(row).execute()
+    return {"success": True, "id": result.data[0]["id"] if result.data else None}
+
+
+def action_list_items(body):
+    """List all saved vital_items."""
+    result = (supabase.table("vital_items")
+              .select("id,file_name,eeg_labels,duration_sec,memo,created_at")
+              .order("created_at", desc=True)
+              .execute())
+    return {"items": result.data}
+
+
+def action_get_item(body):
+    """Get a single vital_item by id."""
+    item_id = body.get("id")
+    if not item_id:
+        return {"error": "id required"}
+    result = supabase.table("vital_items").select("*").eq("id", item_id).execute()
+    if not result.data:
+        return {"error": "not found"}
+    return {"item": result.data[0]}
+
+
+def action_delete_item(body):
+    """Delete a vital_item by id."""
+    item_id = body.get("id")
+    if not item_id:
+        return {"error": "id required"}
+    supabase.table("vital_items").delete().eq("id", item_id).execute()
+    return {"success": True}
+
+
+def action_update_memo(body):
+    """Update memo of a vital_item."""
+    item_id = body.get("id")
+    memo = body.get("memo", "")
+    if not item_id:
+        return {"error": "id required"}
+    supabase.table("vital_items").update({"memo": memo, "updated_at": "now()"}).eq("id", item_id).execute()
+    return {"success": True}
+
+
 ACTIONS = {"load": action_load, "spectrum": action_spectrum,
            "connectivity": action_connectivity, "time_conn": action_time_conn,
-           "advanced": action_advanced}
+           "advanced": action_advanced, "save": action_save,
+           "list_items": action_list_items, "get_item": action_get_item,
+           "delete_item": action_delete_item, "update_memo": action_update_memo}
 
 
 # ── HTTP Server ─────────────────────────────────────────────
