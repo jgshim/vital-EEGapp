@@ -8,6 +8,7 @@ import logging
 import tempfile
 import os
 import base64
+import urllib.request
 import webbrowser
 import threading
 import numpy as np
@@ -189,6 +190,21 @@ def build_conn_matrix(labels, br, metric, band, diag=0, dpli_flip=False):
     return mat
 
 
+# ── file bytes helper ───────────────────────────────────────
+
+def get_file_bytes(body):
+    """Get vital file bytes from either storagePath or fileBase64."""
+    if "storagePath" in body and body["storagePath"]:
+        url = f"{SUPABASE_URL}/storage/v1/object/public/vital-files/{body['storagePath']}"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req) as resp:
+            return resp.read()
+    elif "fileBase64" in body and body["fileBase64"]:
+        return base64.b64decode(body["fileBase64"])
+    else:
+        raise ValueError("No file provided (storagePath or fileBase64 required)")
+
+
 # ── vital file loading ──────────────────────────────────────
 
 def load_vital(file_bytes):
@@ -256,7 +272,7 @@ def load_vital(file_bytes):
 # ── action handlers ─────────────────────────────────────────
 
 def action_load(body):
-    fb = base64.b64decode(body["fileBase64"])
+    fb = get_file_bytes(body)
     d = load_vital(fb)
     eeg_prev = {l: arr[::8].tolist() for l, arr in d["eeg_data"].items()}
     num_prev = {}
@@ -271,7 +287,7 @@ def action_load(body):
 
 
 def action_spectrum(body):
-    fb = base64.b64decode(body["fileBase64"])
+    fb = get_file_bytes(body)
     d = load_vital(fb)
     result = {"psd": {}, "bandPower": {}, "spectrogram": {}}
     for label in d["eeg_labels"]:
@@ -299,7 +315,7 @@ def action_spectrum(body):
 
 
 def action_connectivity(body):
-    fb = base64.b64decode(body["fileBase64"])
+    fb = get_file_bytes(body)
     d = load_vital(fb)
     eeg, labels = d["eeg_data"], d["eeg_labels"]
     pairs = body.get("pairs") or [list(p) for p in combinations(labels, 2)]
@@ -330,7 +346,7 @@ def action_connectivity(body):
 
 
 def action_time_conn(body):
-    fb = base64.b64decode(body["fileBase64"])
+    fb = get_file_bytes(body)
     d = load_vital(fb)
     eeg = d["eeg_data"]
     ca, cb = body["chA"], body["chB"]
@@ -354,7 +370,7 @@ def action_time_conn(body):
 
 
 def action_advanced(body):
-    fb = base64.b64decode(body["fileBase64"])
+    fb = get_file_bytes(body)
     d = load_vital(fb)
     eeg, labels = d["eeg_data"], d["eeg_labels"]
     if not eeg: return {"error": "no EEG data"}
