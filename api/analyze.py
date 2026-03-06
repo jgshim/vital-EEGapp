@@ -267,7 +267,7 @@ def action_load(body):
     num_prev = {}
     for tn, arr in d["numeric_data"].items():
         short = tn.split("/")[-1] if "/" in tn else tn
-        num_prev[short] = arr.tolist()
+        num_prev[short] = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0).tolist()
     return {"eegLabels": d["eeg_labels"], "trackNames": d["track_names"],
             "events": d["events"], "durationSec": d["duration_sec"],
             "numericTracks": list(d["numeric_data"].keys()),
@@ -531,7 +531,10 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     def _json_resp(self, code, data):
-        payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        raw = json.dumps(data, ensure_ascii=False)
+        raw = raw.replace(': NaN', ': null').replace('[NaN', '[null').replace(',NaN', ',null').replace(', NaN', ', null')
+        raw = raw.replace(': Infinity', ': null').replace(': -Infinity', ': null')
+        payload = raw.encode("utf-8")
         self.send_response(code)
         self._cors()
         self.send_header("Content-Type", "application/json; charset=utf-8")
