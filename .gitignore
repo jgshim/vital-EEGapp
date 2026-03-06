@@ -1,0 +1,4 @@
+*.vital
+*.pptx
+__pycache__/
+.claude/

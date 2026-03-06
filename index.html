@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vital EEG 분석</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<style>
+  .tab-btn{transition:all .2s}.tab-btn.active{border-bottom:3px solid #3b82f6;color:#3b82f6;font-weight:700}
+  .tab-panel{display:none}.tab-panel.active{display:block}
+  .spinner{border:4px solid #e5e7eb;border-top:4px solid #3b82f6;border-radius:50%;width:32px;height:32px;animation:spin .8s linear infinite;display:inline-block}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .card{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.1);padding:24px;margin-bottom:20px}
+  body{font-family:'Segoe UI',-apple-system,sans-serif}
+</style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+<header class="bg-white shadow-sm border-b">
+  <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+    <h1 class="text-2xl font-bold text-gray-800">Vital EEG 분석</h1>
+    <span class="text-sm text-gray-500" id="fileInfo"></span>
+  </div>
+</header>
+
+<div class="max-w-7xl mx-auto px-4 py-6">
+
+  <!-- Upload -->
+  <div id="uploadArea" class="card border-2 border-dashed border-gray-300 text-center cursor-pointer hover:border-blue-500 hover:bg-blue-50/30 transition-all"
+       ondragover="event.preventDefault();this.classList.add('border-blue-500','bg-blue-50/30')"
+       ondragleave="this.classList.remove('border-blue-500','bg-blue-50/30')"
+       ondrop="handleDrop(event)" onclick="document.getElementById('fileInput').click()">
+    <input type="file" id="fileInput" accept=".vital" class="hidden" onchange="handleFile(this.files[0])">
+    <div class="py-8">
+      <svg class="mx-auto h-12 w-12 text-gray-400 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+              d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+      </svg>
+      <p class="text-gray-600 font-medium">.vital 파일을 드래그하거나 클릭하여 업로드</p>
+      <p class="text-gray-400 text-sm mt-1">python server.py 실행 후 사용하세요</p>
+    </div>
+    <div id="uploadProgress" class="hidden px-8 pb-4">
+      <div class="w-full bg-gray-200 rounded-full h-2">
+        <div id="progressBar" class="bg-blue-500 h-2 rounded-full transition-all" style="width:0%"></div>
+      </div>
+      <p id="progressText" class="text-sm text-gray-500 mt-2"></p>
+    </div>
+  </div>
+
+  <!-- Main content (hidden until upload) -->
+  <div id="infoPanel" class="hidden">
+    <div class="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-6">
+
+      <!-- Sidebar -->
+      <div class="card lg:col-span-1">
+        <h3 class="font-bold text-gray-700 mb-3">파일 정보</h3>
+        <div id="metaInfo" class="text-sm text-gray-600 space-y-1"></div>
+        <h3 class="font-bold text-gray-700 mt-4 mb-2">이벤트</h3>
+        <div id="eventList" class="text-sm text-gray-600 space-y-1"></div>
+        <h3 class="font-bold text-gray-700 mt-4 mb-2">채널 쌍</h3>
+        <div id="pairSelector" class="max-h-40 overflow-y-auto text-sm"></div>
+      </div>
+
+      <!-- Tabs -->
+      <div class="lg:col-span-3">
+        <div class="bg-white rounded-t-xl border-b flex overflow-x-auto">
+          <button class="tab-btn active px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(0)">파워 스펙트럼</button>
+          <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(1)">기능적 연결성</button>
+          <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(2)">고급 분석</button>
+          <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(3)">데이터 요약</button>
+        </div>
+
+        <div class="tab-panel active card rounded-t-none" id="tab0">
+          <div id="spectrogram_sec"></div><div id="numeric_sec"></div>
+          <div id="psd_sec"></div><div id="bandpower_sec"></div>
+        </div>
+        <div class="tab-panel card rounded-t-none" id="tab1">
+          <div id="conn_loading" class="text-center py-12 hidden"><div class="spinner"></div><p class="mt-3 text-gray-500">연결성 분석 중...</p></div>
+          <div id="conn_freq_sec"></div><div id="conn_matrix_sec"></div>
+          <div id="conn_summary_sec"></div><div id="conn_time_sec"></div>
+        </div>
+        <div class="tab-panel card rounded-t-none" id="tab2">
+          <div id="adv_loading" class="text-center py-12 hidden"><div class="spinner"></div><p class="mt-3 text-gray-500">고급 분석 계산 중... (수십 초 소요)</p></div>
+          <div id="entropy_sec"></div><div id="bpr_sec"></div>
+          <div id="pac_sec"></div><div id="graph_sec"></div>
+        </div>
+        <div class="tab-panel card rounded-t-none" id="tab3">
+          <div id="sum_loading" class="text-center py-12 hidden"><div class="spinner"></div><p class="mt-3 text-gray-500">요약 생성 중...</p></div>
+          <div id="eeg_sum_sec"></div><div id="bp_table_sec"></div>
+          <div id="conn_table_sec"></div><div id="graph_table_sec"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const BANDS={Delta:[.5,4],Theta:[4,8],Alpha:[8,13],Beta:[13,30],Gamma:[30,50]};
+const BN=Object.keys(BANDS);
+const BC={Delta:'#FF6B6B',Theta:'#FFA07A',Alpha:'#98FB98',Beta:'#87CEEB',Gamma:'#DDA0DD'};
+const ML=['Coherence','PLI','dPLI','wPLI','dwPLI','PLE'];
+const CC=['#e41a1c','#377eb8','#4daf4a','#984ea3','#ff7f00','#a65628','#f781bf','#999999'];
+
+let S={fb64:null,load:null,spec:null,conn:null,adv:null,pairs:[],labels:[],tabOk:[0,0,0,0]};
+
+async function api(action,extra={}){
+  const body={...extra,fileBase64:S.fb64};
+  const r=await fetch(`/api/analyze?action=${action}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok)throw new Error(`API ${action}: ${r.status}`);
+  return r.json();
+}
+
+function handleDrop(e){e.preventDefault();const f=e.dataTransfer.files[0];if(f)handleFile(f);}
+
+async function handleFile(file){
+  if(!file||!file.name.endsWith('.vital')){alert('.vital 파일만 지원합니다.');return;}
+  const prog=document.getElementById('uploadProgress'),bar=document.getElementById('progressBar'),txt=document.getElementById('progressText');
+  prog.classList.remove('hidden');bar.style.width='20%';txt.textContent='파일 읽는 중...';
+  const buf=await file.arrayBuffer();
+  const u8=new Uint8Array(buf);
+  let b='';for(let i=0;i<u8.length;i++)b+=String.fromCharCode(u8[i]);
+  S.fb64=btoa(b);
+  bar.style.width='50%';txt.textContent='Vital 파일 분석 중...';
+  try{
+    const d=await api('load');
+    S.load=d;S.labels=d.eegLabels||[];
+    bar.style.width='100%';txt.textContent='완료!';
+    setTimeout(()=>prog.classList.add('hidden'),500);
+    document.getElementById('fileInfo').textContent=`${file.name} | ${S.labels.length} EEG채널 | ${(d.durationSec/60).toFixed(1)}분`;
+    renderInfo(d);S.tabOk=[0,0,0,0];S.spec=null;S.conn=null;S.adv=null;switchTab(0);
+  }catch(e){txt.textContent=`오류: ${e.message}`;console.error(e);}
+}
+
+function renderInfo(d){
+  document.getElementById('infoPanel').classList.remove('hidden');
+  document.getElementById('metaInfo').innerHTML=`<p><b>EEG 채널:</b> ${d.eegLabels.length}개</p><p><b>기록:</b> ${(d.durationSec/60).toFixed(1)}분</p><p><b>트랙:</b> ${d.trackNames.length}개</p>`;
+  const el=document.getElementById('eventList');
+  el.innerHTML=d.events.length?d.events.map(e=>`<p class="text-xs"><b>${e.name}</b> @ ${e.time_min.toFixed(2)}분</p>`).join(''):'<p class="text-xs text-gray-400">없음</p>';
+  const pairs=[];const L=d.eegLabels;
+  for(let i=0;i<L.length;i++)for(let j=i+1;j<L.length;j++)pairs.push([L[i],L[j]]);
+  const key=new Set(['EEG_L1-EEG_R1','EEG_L2-EEG_R2','EEG_L-EEG_R','EEG_L1-EEG_L2','EEG_R1-EEG_R2']);
+  document.getElementById('pairSelector').innerHTML=pairs.map(([a,b])=>{
+    const pl=`${a}-${b}`,ck=key.has(pl)||pairs.length<=5?'checked':'';
+    return `<label class="flex items-center gap-1 py-0.5"><input type="checkbox" class="pcb" value="${pl}" ${ck} onchange="updPairs()"><span>${pl}</span></label>`;
+  }).join('');
+  updPairs();
+}
+function updPairs(){S.pairs=Array.from(document.querySelectorAll('.pcb:checked')).map(c=>c.value.split('-'));S.conn=null;S.tabOk[1]=0;}
+
+function switchTab(i){
+  document.querySelectorAll('.tab-btn').forEach((b,j)=>b.classList.toggle('active',j===i));
+  document.querySelectorAll('.tab-panel').forEach((p,j)=>p.classList.toggle('active',j===i));
+  if(!S.load)return;
+  if(!S.tabOk[i]){S.tabOk[i]=1;[loadSpec,loadConn,loadAdv,loadSum][i]();}
+}
+
+function show(id){document.getElementById(id)?.classList.remove('hidden');}
+function hide(id){document.getElementById(id)?.classList.add('hidden');}
+function spin(id,html){document.getElementById(id).innerHTML=`<div class="text-center py-8"><div class="spinner"></div><p class="mt-2 text-gray-500">${html}</p></div>`;}
+
+// ── Tab 0: Spectrum ──
+async function loadSpec(){
+  spin('spectrogram_sec','파워 스펙트럼 분석 중...');
+  try{S.spec=await api('spectrum');renderSpec(S.spec);}
+  catch(e){document.getElementById('spectrogram_sec').innerHTML=`<p class="text-red-500">오류: ${e.message}</p>`;}
+}
+function renderSpec(d){
+  const L=S.labels;
+  if(!L.length){document.getElementById('spectrogram_sec').innerHTML='<p class="p-4 bg-blue-50 text-blue-600 rounded-lg">EEG 데이터가 없습니다.</p>';return;}
+  const ev=S.load.events||[];
+  const evS=ev.map(e=>({type:'line',x0:e.time_min,x1:e.time_min,y0:.5,y1:50,line:{color:'white',width:2,dash:'dash'}}));
+  const evA=ev.map(e=>({x:e.time_min,y:48,text:e.name,showarrow:false,font:{color:'white',size:10}}));
+
+  // Spectrogram
+  let h='<h3 class="text-lg font-bold mb-3">스펙트로그램</h3>';
+  L.forEach(l=>{if(d.spectrogram[l])h+=`<div id="sg_${l}" class="mb-4" style="height:280px"></div>`;});
+  document.getElementById('spectrogram_sec').innerHTML=h;
+  L.forEach(l=>{const s=d.spectrogram[l];if(!s)return;
+    Plotly.newPlot(`sg_${l}`,[{z:s.power,x:s.times,y:s.freqs,type:'heatmap',colorscale:'Jet',colorbar:{title:'dB'}}],
+      {title:{text:l,font:{size:13}},xaxis:{title:'Time (min)'},yaxis:{title:'Hz'},margin:{t:40,b:50},shapes:evS,annotations:evA},{responsive:true});
+  });
+
+  // Numeric
+  const np=S.load.numericPreview;
+  if(np&&Object.keys(np).length){
+    document.getElementById('numeric_sec').innerHTML='<h3 class="text-lg font-bold mb-3 mt-6">수치 트랙</h3><div id="num_ch" style="height:350px"></div>';
+    Plotly.newPlot('num_ch',Object.entries(np).map(([n,v])=>({y:v,x:v.map((_,i)=>i/60),name:n,type:'scatter',mode:'lines',line:{width:1}})),
+      {xaxis:{title:'Time (min)'},margin:{t:20,b:50},legend:{orientation:'h',y:-0.2}},{responsive:true});
+  }else document.getElementById('numeric_sec').innerHTML='';
+
+  // PSD
+  let ph='<h3 class="text-lg font-bold mb-3 mt-6">파워 스펙트럼 밀도 (PSD)</h3><div class="grid grid-cols-1 md:grid-cols-2 gap-4">';
+  L.forEach(l=>{if(d.psd[l])ph+=`<div id="psd_${l}" style="height:280px"></div>`;});
+  ph+='</div>';
+  document.getElementById('psd_sec').innerHTML=ph;
+  L.forEach(l=>{const p=d.psd[l];if(!p)return;
+    const tr=[{x:p.freqs,y:p.psd,name:'PSD',type:'scatter',mode:'lines',line:{color:'black',width:1}}];
+    BN.forEach(b=>{const[fl,fh]=BANDS[b];const idx=p.freqs.map((f,i)=>f>=fl&&f<=fh?i:-1).filter(i=>i>=0);
+      tr.push({x:idx.map(i=>p.freqs[i]),y:idx.map(i=>p.psd[i]),fill:'tozeroy',name:b,fillcolor:BC[b]+'66',line:{color:BC[b],width:0}});
+    });
+    Plotly.newPlot(`psd_${l}`,tr,{title:{text:l,font:{size:12}},xaxis:{title:'Hz',range:[.5,50]},yaxis:{title:'PSD',type:'log'},showlegend:false,margin:{t:35,b:50}},{responsive:true});
+  });
+
+  // Band Power
+  let bp='<h3 class="text-lg font-bold mb-3 mt-6">대역별 파워</h3><div class="grid grid-cols-1 md:grid-cols-2 gap-4">';
+  L.forEach(l=>{if(d.bandPower[l])bp+=`<div id="bp_${l}" style="height:280px"></div>`;});
+  bp+='</div>';
+  document.getElementById('bandpower_sec').innerHTML=bp;
+  L.forEach(l=>{const b=d.bandPower[l];if(!b)return;
+    Plotly.newPlot(`bp_${l}`,[{x:BN,y:BN.map(n=>b.absolute[n]),type:'bar',marker:{color:BN.map(n=>BC[n])},text:BN.map(n=>b.percent[n]+'%'),textposition:'outside'}],
+      {title:{text:l,font:{size:12}},yaxis:{title:'Power (V²)'},margin:{t:35,b:50}},{responsive:true});
+  });
+}
+
+// ── Tab 1: Connectivity ──
+async function loadConn(){
+  if(S.labels.length<2){document.getElementById('conn_freq_sec').innerHTML='<p class="p-4 bg-yellow-50 text-yellow-700 rounded-lg">연결성 분석에는 EEG 채널 2개 이상 필요합니다.</p>';return;}
+  show('conn_loading');
+  try{const pairs=S.pairs.length?S.pairs:undefined;S.conn=await api('connectivity',{pairs});renderConn(S.conn);}
+  catch(e){document.getElementById('conn_freq_sec').innerHTML=`<p class="text-red-500">오류: ${e.message}</p>`;}
+  hide('conn_loading');
+}
+function renderConn(d){
+  const pl=Object.keys(d.freqResults.Coherence||{});
+  // Freq-resolved
+  let h='<h3 class="text-lg font-bold mb-3">주파수별 연결성</h3><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">';
+  ML.forEach(m=>{h+=`<div id="cf_${m}" style="height:260px"></div>`;});h+='</div>';
+  document.getElementById('conn_freq_sec').innerHTML=h;
+  ML.forEach(m=>{
+    Plotly.newPlot(`cf_${m}`,pl.map((p,i)=>{const v=d.freqResults[m][p];return{x:v.freqs,y:v.values,name:p,type:'scatter',mode:'lines',line:{color:CC[i%CC.length],width:1.5}};}),
+      {title:{text:m,font:{size:12}},xaxis:{title:'Hz',range:[.5,50]},yaxis:{title:m},legend:{font:{size:7},orientation:'h',y:-.3},margin:{t:35,b:60}},{responsive:true});
+  });
+  // Matrix
+  let mh='<h3 class="text-lg font-bold mb-3 mt-6">연결성 매트릭스</h3><select id="matSel" class="border rounded px-3 py-1.5 text-sm mb-3" onchange="renderMat()">';
+  ML.forEach(m=>{mh+=`<option>${m}</option>`;});mh+='</select><div class="grid grid-cols-2 lg:grid-cols-5 gap-3">';
+  BN.forEach(b=>{mh+=`<div id="mat_${b}" style="height:240px"></div>`;});mh+='</div>';
+  document.getElementById('conn_matrix_sec').innerHTML=mh;renderMat();
+  // Summary bar
+  let sh='<h3 class="text-lg font-bold mb-3 mt-6">종합 비교</h3><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">';
+  ML.forEach(m=>{sh+=`<div id="cs_${m}" style="height:260px"></div>`;});sh+='</div>';
+  document.getElementById('conn_summary_sec').innerHTML=sh;
+  ML.forEach(m=>{
+    Plotly.newPlot(`cs_${m}`,pl.map((p,i)=>({x:BN,y:BN.map(b=>d.bandResults[m][p]?.[b]||0),name:p,type:'bar',marker:{color:CC[i%CC.length]}})),
+      {title:{text:m,font:{size:12}},barmode:'group',yaxis:{title:m},legend:{font:{size:7},orientation:'h',y:-.25},margin:{t:35,b:50}},{responsive:true});
+  });
+  // Time-varying
+  if(pl.length>0){
+    let th='<h3 class="text-lg font-bold mb-3 mt-6">시간별 연결성</h3>';
+    th+=`<select id="tvSel" class="border rounded px-3 py-1.5 text-sm mb-3" onchange="loadTimeConn()">`;
+    pl.forEach(p=>{th+=`<option>${p}</option>`;});th+='</select>';
+    th+='<div id="tc_chart"></div>';
+    document.getElementById('conn_time_sec').innerHTML=th;
+    loadTimeConn();
+  }
+}
+function renderMat(){
+  if(!S.conn)return;const m=document.getElementById('matSel')?.value||'Coherence';
+  const sh=S.conn.labels.map(l=>l.replace('EEG_',''));
+  BN.forEach(b=>{const mat=S.conn.matrices[m]?.[b];if(!mat)return;
+    Plotly.newPlot(`mat_${b}`,[{z:mat,x:sh,y:sh,type:'heatmap',colorscale:m==='dPLI'?'RdBu':'YlOrRd',zmin:0,zmax:1}],
+      {title:{text:b,font:{size:11}},margin:{t:35,b:50,l:50,r:30},xaxis:{tickangle:45}},{responsive:true});
+  });
+}
+async function loadTimeConn(){
+  const pair=document.getElementById('tvSel')?.value;if(!pair)return;
+  const[a,b]=pair.split('-');
+  document.getElementById('tc_chart').innerHTML='<div class="text-center py-6"><div class="spinner"></div></div>';
+  try{
+    const d=await api('time_conn',{chA:a,chB:b});
+    if(d.error){document.getElementById('tc_chart').innerHTML=`<p class="text-yellow-600">${d.error}</p>`;return;}
+    const ev=S.load.events||[];
+    const evS=ev.map(e=>({type:'line',x0:e.time_min,x1:e.time_min,yref:'paper',y0:0,y1:1,line:{color:'red',width:1.5,dash:'dash'}}));
+    let h='<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">';
+    ML.forEach(m=>{h+=`<div id="tc_${m}" style="height:240px"></div>`;});h+='</div>';
+    document.getElementById('tc_chart').innerHTML=h;
+    ML.forEach(m=>{
+      Plotly.newPlot(`tc_${m}`,BN.map(b=>({x:d.timePts,y:d.timeConn[m][b],name:b,type:'scatter',mode:'lines',line:{color:BC[b],width:1.5}})),
+        {title:{text:m,font:{size:12}},xaxis:{title:'Time (min)'},yaxis:{title:m},shapes:evS,legend:{font:{size:8}},margin:{t:35,b:50}},{responsive:true});
+    });
+  }catch(e){document.getElementById('tc_chart').innerHTML=`<p class="text-red-500">${e.message}</p>`;}
+}
+
+// ── Tab 2: Advanced ──
+async function loadAdv(){
+  if(!S.labels.length){document.getElementById('entropy_sec').innerHTML='<p class="p-4 bg-blue-50 text-blue-600 rounded-lg">EEG 데이터가 없습니다.</p>';return;}
+  show('adv_loading');
+  try{const pairs=S.pairs.length?S.pairs:undefined;S.adv=await api('advanced',{pairs});renderAdv(S.adv);}
+  catch(e){document.getElementById('entropy_sec').innerHTML=`<p class="text-red-500">오류: ${e.message}</p>`;}
+  hide('adv_loading');
+}
+function renderAdv(d){
+  if(d.error){document.getElementById('entropy_sec').innerHTML=`<p class="p-4 bg-yellow-50 text-yellow-600 rounded-lg">${d.error}</p>`;return;}
+  const L=d.labels,ev=S.load.events||[];
+  const evS=ev.map(e=>({type:'line',x0:e.time_min,x1:e.time_min,yref:'paper',y0:0,y1:1,line:{color:'red',width:1.5,dash:'dash'}}));
+
+  // Entropy
+  document.getElementById('entropy_sec').innerHTML='<h3 class="text-lg font-bold mb-3">A. 엔트로피</h3><div class="grid grid-cols-1 md:grid-cols-2 gap-4"><div id="se_c" style="height:280px"></div><div id="pe_c" style="height:280px"></div></div>';
+  Plotly.newPlot('se_c',L.map(c=>({x:d.timePts,y:d.spectralEntropy[c],name:c,type:'scatter',mode:'lines',line:{width:1.5}})),
+    {title:{text:'Spectral Entropy',font:{size:12}},xaxis:{title:'Time (min)'},yaxis:{range:[0,1]},shapes:evS,margin:{t:35,b:50}},{responsive:true});
+  Plotly.newPlot('pe_c',L.map(c=>({x:d.timePts,y:d.permEntropy[c],name:c,type:'scatter',mode:'lines',line:{width:1.5}})),
+    {title:{text:'Permutation Entropy',font:{size:12}},xaxis:{title:'Time (min)'},yaxis:{range:[0,1]},shapes:evS,margin:{t:35,b:50}},{responsive:true});
+
+  // BPR
+  const rn={alpha_delta:'Alpha/Delta',theta_beta:'Theta/Beta',dt_ab:'(D+T)/(A+B)'};
+  document.getElementById('bpr_sec').innerHTML='<h3 class="text-lg font-bold mb-3 mt-6">B. 대역 파워 비율</h3><div class="grid grid-cols-1 md:grid-cols-3 gap-4">'+Object.keys(rn).map(k=>`<div id="bpr_${k}" style="height:260px"></div>`).join('')+'</div>';
+  Object.entries(rn).forEach(([k,t])=>{
+    Plotly.newPlot(`bpr_${k}`,L.map(c=>({x:d.timePts,y:d.bandPowerRatios[c][k],name:c,type:'scatter',mode:'lines',line:{width:1.5}})),
+      {title:{text:t,font:{size:12}},xaxis:{title:'Time (min)'},shapes:evS,margin:{t:35,b:50}},{responsive:true});
+  });
+
+  // PAC
+  let ph='<h3 class="text-lg font-bold mb-3 mt-6">C. PAC</h3><div class="grid grid-cols-1 md:grid-cols-2 gap-4">';
+  L.forEach(c=>{ph+=`<div id="pac_${c}" style="height:280px"></div>`;});ph+='</div>';
+  if(L.length)ph+=`<div id="pac_bar" style="height:260px" class="mt-3"></div>`;
+  document.getElementById('pac_sec').innerHTML=ph;
+  L.forEach(c=>{
+    Plotly.newPlot(`pac_${c}`,[{z:d.pac[c],x:d.ampFreqs,y:d.phaseFreqs,type:'heatmap',colorscale:'Hot'}],
+      {title:{text:`${c} Comodulogram`,font:{size:12}},xaxis:{title:'Amp Hz'},yaxis:{title:'Phase Hz'},margin:{t:35,b:50}},{responsive:true});
+  });
+  if(L.length&&d.pacBar[L[0]]){
+    const ma=d.pacBar[L[0]],n=ma.length,ct=Array.from({length:n},(_,i)=>-180+(360/n)*i+180/n);
+    Plotly.newPlot('pac_bar',[{x:ct,y:ma,type:'bar',marker:{color:'steelblue'}}],
+      {title:{text:`${L[0]} Theta→Gamma PAC`,font:{size:12}},xaxis:{title:'Phase (°)'},yaxis:{title:'Mean Amplitude'},margin:{t:35,b:50}},{responsive:true});
+  }
+
+  // Graph
+  let gh='<h3 class="text-lg font-bold mb-3 mt-6">D. 그래프 이론 지표</h3>';
+  if(d.graphMetrics&&Object.keys(d.graphMetrics).length){
+    gh+='<div class="overflow-x-auto"><table class="min-w-full text-sm border"><thead class="bg-gray-100"><tr><th class="px-3 py-2 border">Metric</th><th class="px-3 py-2 border">Band</th><th class="px-3 py-2 border">CC</th><th class="px-3 py-2 border">CPL</th><th class="px-3 py-2 border">GE</th><th class="px-3 py-2 border">LE</th></tr></thead><tbody>';
+    ML.forEach(m=>{if(!d.graphMetrics[m])return;BN.forEach(b=>{const g=d.graphMetrics[m][b];if(!g)return;
+      gh+=`<tr><td class="px-3 py-1 border">${m}</td><td class="px-3 py-1 border">${b}</td><td class="px-3 py-1 border">${g.cc.toFixed(4)}</td><td class="px-3 py-1 border">${g.cpl.toFixed(4)}</td><td class="px-3 py-1 border">${g.ge.toFixed(4)}</td><td class="px-3 py-1 border">${g.le.toFixed(4)}</td></tr>`;
+    });});
+    gh+='</tbody></table></div>';
+  }else gh+='<p class="p-3 bg-yellow-50 text-yellow-600 rounded-lg">채널 2개 이상 필요</p>';
+  document.getElementById('graph_sec').innerHTML=gh;
+}
+
+// ── Tab 3: Summary ──
+async function loadSum(){
+  show('sum_loading');
+  try{if(!S.spec)S.spec=await api('spectrum');renderSum();}
+  catch(e){document.getElementById('eeg_sum_sec').innerHTML=`<p class="text-red-500">${e.message}</p>`;}
+  hide('sum_loading');
+}
+function renderSum(){
+  const L=S.labels,ld=S.load,sp=S.spec;
+  if(!L.length){document.getElementById('eeg_sum_sec').innerHTML='<p class="p-4 bg-blue-50 text-blue-600 rounded-lg">EEG 데이터가 없습니다.</p>';return;}
+  // EEG summary
+  let h='<h3 class="text-lg font-bold mb-3">EEG 채널 요약</h3><div class="overflow-x-auto"><table class="min-w-full text-sm border"><thead class="bg-gray-100"><tr><th class="px-3 py-2 border">Channel</th><th class="px-3 py-2 border">Samples</th><th class="px-3 py-2 border">Duration (s)</th></tr></thead><tbody>';
+  L.forEach(l=>{const n=ld.nSamples[l]||0;h+=`<tr><td class="px-3 py-1 border">${l}</td><td class="px-3 py-1 border">${n}</td><td class="px-3 py-1 border">${(n/128).toFixed(1)}</td></tr>`;});
+  h+='</tbody></table></div>';
+  document.getElementById('eeg_sum_sec').innerHTML=h;
+  // Band power table
+  if(sp&&sp.bandPower){
+    let bh='<h3 class="text-lg font-bold mb-3 mt-6">대역별 파워</h3><div class="overflow-x-auto"><table class="min-w-full text-sm border"><thead class="bg-gray-100"><tr><th class="px-3 py-2 border">Channel</th>';
+    BN.forEach(b=>{bh+=`<th class="px-3 py-2 border">${b} (V²)</th><th class="px-3 py-2 border">${b} (%)</th>`;});
+    bh+='</tr></thead><tbody>';
+    L.forEach(l=>{const bp=sp.bandPower[l];if(!bp)return;bh+=`<tr><td class="px-3 py-1 border font-medium">${l}</td>`;
+      BN.forEach(b=>{bh+=`<td class="px-3 py-1 border">${bp.absolute[b].toFixed(6)}</td><td class="px-3 py-1 border">${bp.percent[b]}%</td>`;});bh+='</tr>';});
+    bh+='</tbody></table></div>';
+    document.getElementById('bp_table_sec').innerHTML=bh;
+  }
+  document.getElementById('conn_table_sec').innerHTML='';
+  document.getElementById('graph_table_sec').innerHTML='';
+}
+</script>
+</body>
+</html>
