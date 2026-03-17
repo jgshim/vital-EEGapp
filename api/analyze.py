@@ -17,6 +17,22 @@ from supabase import create_client
 # ── ONNX DL models (lazy-loaded) ─────────────────────────────
 _DL_MODELS = {}
 
+def _ensure_onnxruntime():
+    """Install onnxruntime to /tmp at runtime if not available."""
+    try:
+        import onnxruntime
+        return onnxruntime
+    except ImportError:
+        import subprocess, sys
+        subprocess.check_call([
+            sys.executable, '-m', 'pip', 'install',
+            'onnxruntime', '--target', '/tmp/ort_pkg',
+            '--no-cache-dir', '--quiet'
+        ])
+        sys.path.insert(0, '/tmp/ort_pkg')
+        import onnxruntime
+        return onnxruntime
+
 def _load_dl_models():
     """Load U-Net and CNN-LSTM ONNX models if available."""
     if _DL_MODELS.get('loaded'):
@@ -24,7 +40,7 @@ def _load_dl_models():
     _DL_MODELS['loaded'] = True
     _DL_MODELS['ok'] = False
     try:
-        import onnxruntime as ort
+        ort = _ensure_onnxruntime()
         model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models')
         unet_path = os.path.join(model_dir, 'unet1d.onnx')
         lstm_path = os.path.join(model_dir, 'cnn_lstm.onnx')
