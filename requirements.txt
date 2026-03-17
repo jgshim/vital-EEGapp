@@ -2,3 +2,4 @@ numpy
 scipy
 supabase
 vitaldb
+onnxruntime
