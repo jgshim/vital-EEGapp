@@ -14,6 +14,39 @@ from math import factorial
 from http.server import BaseHTTPRequestHandler
 from supabase import create_client
 
+# ── ONNX DL models (lazy-loaded) ─────────────────────────────
+_DL_MODELS = {}
+
+def _load_dl_models():
+    """Load U-Net and CNN-LSTM ONNX models if available."""
+    if _DL_MODELS.get('loaded'):
+        return _DL_MODELS.get('ok', False)
+    _DL_MODELS['loaded'] = True
+    _DL_MODELS['ok'] = False
+    try:
+        import onnxruntime as ort
+        model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models')
+        unet_path = os.path.join(model_dir, 'unet1d.onnx')
+        lstm_path = os.path.join(model_dir, 'cnn_lstm.onnx')
+        unet_norm_path = os.path.join(model_dir, 'unet1d_norm.json')
+        lstm_norm_path = os.path.join(model_dir, 'cnn_lstm_norm.json')
+        if not all(os.path.exists(p) for p in [unet_path, lstm_path, unet_norm_path, lstm_norm_path]):
+            return False
+        opts = ort.SessionOptions()
+        opts.inter_op_num_threads = 1
+        opts.intra_op_num_threads = 1
+        _DL_MODELS['unet'] = ort.InferenceSession(unet_path, opts, providers=['CPUExecutionProvider'])
+        _DL_MODELS['cnn_lstm'] = ort.InferenceSession(lstm_path, opts, providers=['CPUExecutionProvider'])
+        with open(unet_norm_path) as f:
+            _DL_MODELS['unet_norm'] = json.load(f)
+        with open(lstm_norm_path) as f:
+            _DL_MODELS['cnn_lstm_norm'] = json.load(f)
+        _DL_MODELS['ok'] = True
+        return True
+    except Exception as e:
+        print(f"ONNX model load failed: {e}")
+        return False
+
 # ── Supabase ─────────────────────────────────────────────────
 SUPABASE_URL = "https://tcyapfwczeuhcqecxpdi.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRjeWFwZndjemV1aGNxZWN4cGRpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI3NjczMDUsImV4cCI6MjA4ODM0MzMwNX0.b5oXpe23asLqGLCnHkXLf9LB2W6OoH7nBwkBN0n6dZA"
@@ -763,10 +796,61 @@ def action_ppg2abp(body):
         for k in corr_series:
             corr_series[k] = [0.0 if np.isnan(v) else v for v in corr_series[k]]
 
+        # ---- DL Model Inference (U-Net, CNN-LSTM) via ONNX ----
+        has_dl = _load_dl_models()
+        unet_recon = None
+        lstm_recon = None
+        if has_dl:
+            # Demographics: default age=5, sex=0 for pediatric if not available
+            demo_raw = np.array([[5.0, 0.0]], dtype=np.float32)
+            for mkey, mname in [('unet', 'U-Net 1D'), ('cnn_lstm', 'CNN-LSTM')]:
+                sess = _DL_MODELS[mkey]
+                norm = _DL_MODELS[f'{mkey}_norm']
+                ppg_norm = (test_pleth - norm['p_mu']) / (norm['p_sig'] + 1e-8)
+                dm = np.array(norm['demo_mean'], dtype=np.float32)
+                ds_arr = np.array(norm['demo_scale'], dtype=np.float32)
+                demo_s = ((demo_raw - dm) / (ds_arr + 1e-8)).astype(np.float32)
+                demo_batch = np.repeat(demo_s, test_n, axis=0)
+                # Batch inference
+                recon_all = []
+                bs = 32
+                for start in range(0, test_n, bs):
+                    end = min(start + bs, test_n)
+                    ppg_in = ppg_norm[start:end][:, np.newaxis, :].astype(np.float32)
+                    demo_in = demo_batch[start:end]
+                    out = sess.run(None, {'ppg': ppg_in, 'demo': demo_in})[0]
+                    recon_all.append(out.squeeze(1))
+                recon_arr = np.concatenate(recon_all, axis=0)
+                recon_arr = recon_arr * norm['a_sig'] + norm['a_mu']
+                if mkey == 'unet':
+                    unet_recon = recon_arr
+                else:
+                    lstm_recon = recon_arr
+
+        # Add DL model metrics
+        if unet_recon is not None:
+            for rname, recon in [('U-Net 1D', unet_recon), ('CNN-LSTM', lstm_recon)]:
+                if recon is not None:
+                    dl_corrs = []
+                    for i in range(test_n):
+                        c = np.corrcoef(test_ibp1[i], recon[i])[0, 1]
+                        dl_corrs.append(float(c) if not np.isnan(c) else 0.0)
+                    dl_sbp = np.array([s.max() for s in recon]) + raw_ibp1_mean
+                    dl_dbp = np.array([s.min() for s in recon]) + raw_ibp1_mean
+                    models[rname] = {
+                        'sbp_mae': float(np.mean(np.abs(dl_sbp - test_true_sbp))),
+                        'dbp_mae': float(np.mean(np.abs(dl_dbp - test_true_dbp))),
+                        'wf_corr': float(np.mean(dl_corrs))
+                    }
+                    corr_series[rname.lower().replace(' ', '_').replace('-', '_')] = dl_corrs
+
         # ---- Zoomed Cardiac Cycles (4s windows, 2x2 grid) & Best/Median/Worst ----
-        tf_corr_arr = np.array(corr_series['transfer_fn'])
-        ad_corr_arr = np.array(corr_series['adaptive'])
-        rank_corr = tf_corr_arr.copy()
+        # Use U-Net correlation for ranking if DL available, else TF
+        if unet_recon is not None:
+            unet_corr_arr = np.array(corr_series.get('u_net_1d', [0.0]*test_n))
+            rank_corr = unet_corr_arr.copy()
+        else:
+            rank_corr = np.array(corr_series['transfer_fn']).copy()
         rank_corr[np.isnan(rank_corr)] = -1
         sorted_idx = np.argsort(rank_corr)
 
@@ -783,55 +867,70 @@ def action_ppg2abp(body):
         zoom_indices = [int(top_quarter[p]) for p in pick4]
         zoom_win = int(SR * 4)
 
+        def safe_corr(a, b):
+            if np.std(a) < 1e-8 or np.std(b) < 1e-8: return 0.0
+            c = np.corrcoef(a, b)[0, 1]
+            return float(c) if not np.isnan(c) else 0.0
+
         zoomed_panels = []
         for zi in zoom_indices:
             seg_a = test_ibp1[zi]
-            seg_ad = adaptive_recon[zi]
-            seg_tf = tf_recon[zi]
             seg_ppg = test_pleth[zi]
             mid = seg_len // 2
             s = max(0, mid - zoom_win // 2)
             e = min(seg_len, s + zoom_win)
             t4 = (np.arange(e - s) / SR).tolist()
-            corr_ad = float(ad_corr_arr[zi]) if not np.isnan(ad_corr_arr[zi]) else 0.0
-            corr_tf = float(tf_corr_arr[zi]) if not np.isnan(tf_corr_arr[zi]) else 0.0
-            zoomed_panels.append({
+            panel = {
                 'seg_idx': int(good_segs[train_n + zi]),
                 'time': t4,
                 'actual': (seg_a[s:e] + _off).tolist(),
-                'adaptive': (seg_ad[s:e] + _off).tolist(),
-                'transfer_fn': (seg_tf[s:e] + _off).tolist(),
                 'ppg': seg_ppg[s:e].tolist(),
-                'corr_adaptive': corr_ad,
-                'corr_tf': corr_tf,
-                'rmse_adaptive': seg_rmse(seg_a[s:e], seg_ad[s:e]),
-                'rmse_tf': seg_rmse(seg_a[s:e], seg_tf[s:e]),
-            })
+            }
+            if unet_recon is not None:
+                panel['unet'] = (unet_recon[zi][s:e] + _off).tolist()
+                panel['cnn_lstm'] = (lstm_recon[zi][s:e] + _off).tolist()
+                panel['corr_unet'] = safe_corr(seg_a[s:e], unet_recon[zi][s:e])
+                panel['rmse_unet'] = seg_rmse(seg_a[s:e], unet_recon[zi][s:e])
+                panel['corr_lstm'] = safe_corr(seg_a[s:e], lstm_recon[zi][s:e])
+                panel['rmse_lstm'] = seg_rmse(seg_a[s:e], lstm_recon[zi][s:e])
+            else:
+                panel['adaptive'] = (adaptive_recon[zi][s:e] + _off).tolist()
+                panel['transfer_fn'] = (tf_recon[zi][s:e] + _off).tolist()
+                panel['corr_adaptive'] = safe_corr(seg_a[s:e], adaptive_recon[zi][s:e])
+                panel['rmse_adaptive'] = seg_rmse(seg_a[s:e], adaptive_recon[zi][s:e])
+                panel['corr_tf'] = safe_corr(seg_a[s:e], tf_recon[zi][s:e])
+                panel['rmse_tf'] = seg_rmse(seg_a[s:e], tf_recon[zi][s:e])
+            zoomed_panels.append(panel)
 
         # -- Best / Median / Worst full 10s segments --
         bmw_cases = []
         for label, idx in [('Best', best_i), ('Median', median_i), ('Worst', worst_i)]:
             seg_a = test_ibp1[idx]
-            seg_ad = adaptive_recon[idx]
-            seg_tf = tf_recon[idx]
-            corr_ad = float(ad_corr_arr[idx]) if not np.isnan(ad_corr_arr[idx]) else 0.0
-            corr_tf = float(tf_corr_arr[idx]) if not np.isnan(tf_corr_arr[idx]) else 0.0
             ds2 = 2
-            bmw_cases.append({
+            case = {
                 'label': label,
                 'seg_idx': int(good_segs[train_n + idx]),
-                'corr_adaptive': corr_ad,
-                'corr_tf': corr_tf,
-                'rmse_adaptive': seg_rmse(seg_a, seg_ad),
-                'rmse_tf': seg_rmse(seg_a, seg_tf),
                 'time': (np.arange(seg_len) / SR)[::ds2].tolist(),
                 'actual': (seg_a + _off)[::ds2].tolist(),
-                'adaptive': (seg_ad + _off)[::ds2].tolist(),
-                'transfer_fn': (seg_tf + _off)[::ds2].tolist(),
-            })
+            }
+            if unet_recon is not None:
+                case['unet'] = (unet_recon[idx] + _off)[::ds2].tolist()
+                case['cnn_lstm'] = (lstm_recon[idx] + _off)[::ds2].tolist()
+                case['corr_unet'] = safe_corr(seg_a, unet_recon[idx])
+                case['rmse_unet'] = seg_rmse(seg_a, unet_recon[idx])
+                case['corr_lstm'] = safe_corr(seg_a, lstm_recon[idx])
+                case['rmse_lstm'] = seg_rmse(seg_a, lstm_recon[idx])
+            else:
+                case['adaptive'] = (adaptive_recon[idx] + _off)[::ds2].tolist()
+                case['transfer_fn'] = (tf_recon[idx] + _off)[::ds2].tolist()
+                case['corr_adaptive'] = safe_corr(seg_a, adaptive_recon[idx])
+                case['rmse_adaptive'] = seg_rmse(seg_a, adaptive_recon[idx])
+                case['corr_tf'] = safe_corr(seg_a, tf_recon[idx])
+                case['rmse_tf'] = seg_rmse(seg_a, tf_recon[idx])
+            bmw_cases.append(case)
 
         return {
-            'hasDL': False,
+            'hasDL': has_dl and unet_recon is not None,
             'nSegments': n_segs,
             'trainN': train_n,
             'testN': test_n,
