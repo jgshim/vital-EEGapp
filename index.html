@@ -66,8 +66,8 @@
       <div class="card lg:col-span-1">
         <h3 class="font-bold text-gray-700 mb-3">파일 정보</h3>
         <div id="metaInfo" class="text-sm text-gray-600 space-y-1"></div>
-        <h3 class="font-bold text-gray-700 mt-4 mb-2">이벤트</h3>
-        <div id="eventList" class="text-sm text-gray-600 space-y-1"></div>
+        <h3 class="font-bold text-gray-700 mt-4 mb-2">신호 정보</h3>
+        <div id="signalInfo" class="text-sm text-gray-600 space-y-1"></div>
         <h3 class="font-bold text-gray-700 mt-4 mb-2">메모</h3>
         <textarea id="memoInput" class="w-full border rounded p-2 text-sm" rows="2" placeholder="분석 메모 입력..."></textarea>
         <button onclick="saveToSupabase()" id="saveBtn" class="mt-2 w-full bg-blue-500 text-white rounded py-2 text-sm font-medium hover:bg-blue-600 transition">DB에 저장</button>
@@ -84,6 +84,7 @@
           <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(1)">기능적 연결성</button>
           <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(2)">고급 분석</button>
           <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(3)">데이터 요약</button>
+          <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(4)">Research</button>
         </div>
 
         <div class="tab-panel active card rounded-t-none" id="tab0">
@@ -105,6 +106,104 @@
           <div id="eeg_sum_sec"></div><div id="bp_table_sec"></div>
           <div id="conn_table_sec"></div><div id="graph_table_sec"></div>
         </div>
+        <div class="tab-panel card rounded-t-none" id="tab4">
+          <!-- Research Intro (always visible) -->
+          <div class="mb-6">
+            <h3 class="text-xl font-bold text-gray-800 mb-3">PPG-to-ABP: PPG 파형 기반 침습적 동맥압 예측 연구</h3>
+            <div class="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-5 mb-4">
+              <p class="text-gray-700 mb-3"><b>연구 목적:</b> 비침습적 광용적맥파(PPG, Photoplethysmography)로부터 침습적 동맥혈압(ABP, Arterial Blood Pressure) 파형을 예측하는 딥러닝 모델 개발</p>
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                <div class="bg-white rounded-lg p-3 shadow-sm">
+                  <p class="font-bold text-blue-700 mb-1">데이터</p>
+                  <p>46명 소아 환자</p><p>81,812 PPG-ABP 세그먼트</p><p>125Hz, 10초 단위</p>
+                </div>
+                <div class="bg-white rounded-lg p-3 shadow-sm">
+                  <p class="font-bold text-green-700 mb-1">스칼라 예측 (Best)</p>
+                  <p><b>Improved CNN:</b> DBP MAE 7.20 (BHS C)</p>
+                  <p><b>ResNet1D:</b> SBP MAE 12.25 (R²=0.20)</p>
+                  <p>5-Fold Group CV, GPU</p>
+                </div>
+                <div class="bg-white rounded-lg p-3 shadow-sm">
+                  <p class="font-bold text-purple-700 mb-1">파형 재구성</p>
+                  <p><b>U-Net 1D:</b> Corr 0.566, RMSE 13.70</p>
+                  <p><b>CNN-LSTM:</b> Corr 0.562, RMSE 13.86</p>
+                  <p>FiLM conditioning (age/sex)</p>
+                </div>
+              </div>
+            </div>
+
+            <details class="mb-4">
+              <summary class="cursor-pointer font-bold text-gray-700 hover:text-blue-600">모델 아키텍처 상세 (클릭하여 펼치기)</summary>
+              <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                <div class="border rounded-lg p-3">
+                  <p class="font-bold text-blue-600 mb-2">Improved 1D-CNN</p>
+                  <p>5 Conv blocks (32→64→128→256→512)</p>
+                  <p>GAP + Late Fusion [age, sex]</p>
+                  <p>Output: SBP, DBP, MBP (3 values)</p>
+                  <p class="text-gray-500 mt-1">~1.5M params, 33min training</p>
+                </div>
+                <div class="border rounded-lg p-3">
+                  <p class="font-bold text-red-600 mb-2">ResNet1D</p>
+                  <p>Stem + 4 Residual Stages (64→128→256→512)</p>
+                  <p>Skip connections + GAP</p>
+                  <p>Output: SBP, DBP, MBP (3 values)</p>
+                  <p class="text-gray-500 mt-1">~2.8M params, 42min training</p>
+                </div>
+                <div class="border rounded-lg p-3">
+                  <p class="font-bold text-green-600 mb-2">U-Net 1D</p>
+                  <p>Encoder(32-64-128-256) + Bottleneck(512)</p>
+                  <p>FiLM conditioning (age/sex → γ,β)</p>
+                  <p>Output: ABP waveform (1250 points)</p>
+                  <p class="text-gray-500 mt-1">~4.3M params, MSE+gradient loss</p>
+                </div>
+                <div class="border rounded-lg p-3">
+                  <p class="font-bold text-purple-600 mb-2">CNN-LSTM Hybrid</p>
+                  <p>CNN Encoder → BiLSTM → CNN Decoder</p>
+                  <p>FiLM conditioning (age/sex)</p>
+                  <p>Output: ABP waveform (1250 points)</p>
+                  <p class="text-gray-500 mt-1">~933K params, 40min training</p>
+                </div>
+              </div>
+            </details>
+
+            <!-- Reference results table -->
+            <div class="overflow-x-auto mb-4">
+              <h4 class="font-bold text-gray-700 mb-2">전체 모델 성능 비교 (46명 소아 환자, 5-Fold Group CV)</h4>
+              <table class="min-w-full text-sm border">
+                <thead class="bg-gray-100">
+                  <tr>
+                    <th class="px-3 py-2 border">Model</th>
+                    <th class="px-3 py-2 border">Type</th>
+                    <th class="px-3 py-2 border">SBP MAE</th>
+                    <th class="px-3 py-2 border">DBP MAE</th>
+                    <th class="px-3 py-2 border">SBP R²</th>
+                    <th class="px-3 py-2 border">WF Corr</th>
+                    <th class="px-3 py-2 border">BHS Grade</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td class="px-3 py-1 border">XGBoost</td><td class="px-3 py-1 border">ML</td><td class="px-3 py-1 border">14.98</td><td class="px-3 py-1 border">8.66</td><td class="px-3 py-1 border">-0.19</td><td class="px-3 py-1 border">-</td><td class="px-3 py-1 border">D</td></tr>
+                  <tr class="bg-gray-50"><td class="px-3 py-1 border">LightGBM</td><td class="px-3 py-1 border">ML</td><td class="px-3 py-1 border">16.09</td><td class="px-3 py-1 border">8.42</td><td class="px-3 py-1 border">-0.34</td><td class="px-3 py-1 border">-</td><td class="px-3 py-1 border">D</td></tr>
+                  <tr><td class="px-3 py-1 border font-bold text-blue-700">Improved CNN</td><td class="px-3 py-1 border">DL</td><td class="px-3 py-1 border">12.64</td><td class="px-3 py-1 border font-bold text-green-600">7.20</td><td class="px-3 py-1 border">0.17</td><td class="px-3 py-1 border">-</td><td class="px-3 py-1 border text-green-600 font-bold">C (DBP/MBP)</td></tr>
+                  <tr class="bg-gray-50"><td class="px-3 py-1 border font-bold text-red-600">ResNet1D</td><td class="px-3 py-1 border">DL</td><td class="px-3 py-1 border font-bold text-green-600">12.25</td><td class="px-3 py-1 border">7.83</td><td class="px-3 py-1 border font-bold text-green-600">0.20</td><td class="px-3 py-1 border">-</td><td class="px-3 py-1 border">C (MBP)</td></tr>
+                  <tr><td class="px-3 py-1 border font-bold text-green-700">U-Net 1D</td><td class="px-3 py-1 border">Waveform</td><td class="px-3 py-1 border">-</td><td class="px-3 py-1 border">-</td><td class="px-3 py-1 border">-</td><td class="px-3 py-1 border font-bold text-green-600">0.566</td><td class="px-3 py-1 border">-</td></tr>
+                  <tr class="bg-gray-50"><td class="px-3 py-1 border font-bold text-purple-700">CNN-LSTM</td><td class="px-3 py-1 border">Waveform</td><td class="px-3 py-1 border">-</td><td class="px-3 py-1 border">-</td><td class="px-3 py-1 border">-</td><td class="px-3 py-1 border">0.562</td><td class="px-3 py-1 border">-</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Live analysis (shown after file upload with PLETH/IBP1) -->
+          <div id="ppg2abp_loading" class="text-center py-12 hidden"><div class="spinner"></div><p class="mt-3 text-gray-500">PPG→ABP 분석 중...</p></div>
+          <div id="ppg2abp_status"></div>
+          <div id="ppg2abp_stats"></div>
+          <div id="ppg2abp_cardiac"></div>
+          <div id="ppg2abp_bmw"></div>
+          <div id="ppg2abp_waveform"></div>
+          <div id="ppg2abp_timeseries"></div>
+          <div id="ppg2abp_correlation"></div>
+          <div id="ppg2abp_metrics"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -121,7 +220,7 @@ const SB_URL='https://tcyapfwczeuhcqecxpdi.supabase.co';
 const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRjeWFwZndjemV1aGNxZWN4cGRpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI3NjczMDUsImV4cCI6MjA4ODM0MzMwNX0.b5oXpe23asLqGLCnHkXLf9LB2W6OoH7nBwkBN0n6dZA';
 const sb=window.supabase.createClient(SB_URL,SB_KEY);
 
-let S={storagePath:null,load:null,spec:null,conn:null,adv:null,pairs:[],labels:[],tabOk:[0,0,0,0],fileName:null,currentId:null};
+let S={storagePath:null,load:null,spec:null,conn:null,adv:null,ppg:null,pairs:[],labels:[],tabOk:[0,0,0,0,0],fileName:null,currentId:null};
 
 async function api(action,extra={}){
   const body={...extra};
@@ -197,7 +296,7 @@ async function loadFromSupabase(id){
     document.getElementById('fileInfo').textContent=`${it.file_name} | ${S.labels.length} EEG채널 | ${(it.duration_sec/60).toFixed(1)}분 (DB)`;
     document.getElementById('memoInput').value=it.memo||'';
     renderInfo(S.load);
-    S.tabOk=[0,0,0,0];
+    S.tabOk=[0,0,0,0,0];S.ppg=null;
     if(S.spec)S.tabOk[0]=1;
     if(S.conn)S.tabOk[1]=1;
     if(S.adv)S.tabOk[2]=1;
@@ -232,15 +331,23 @@ async function handleFile(file){
     bar.style.width='100%';txt.textContent='완료!';
     setTimeout(()=>prog.classList.add('hidden'),500);
     document.getElementById('fileInfo').textContent=`${file.name} | ${S.labels.length} EEG채널 | ${(d.durationSec/60).toFixed(1)}분`;
-    renderInfo(d);S.tabOk=[0,0,0,0];S.spec=null;S.conn=null;S.adv=null;switchTab(0);
+    renderInfo(d);S.tabOk=[0,0,0,0,0];S.spec=null;S.conn=null;S.adv=null;S.ppg=null;switchTab(0);
   }catch(e){txt.textContent=`오류: ${e.message}`;console.error(e);}
 }
 
 function renderInfo(d){
   document.getElementById('infoPanel').classList.remove('hidden');
   document.getElementById('metaInfo').innerHTML=`<p><b>EEG 채널:</b> ${d.eegLabels.length}개</p><p><b>기록:</b> ${(d.durationSec/60).toFixed(1)}분</p><p><b>트랙:</b> ${d.trackNames.length}개</p>`;
-  const el=document.getElementById('eventList');
-  el.innerHTML=d.events.length?d.events.map(e=>`<p class="text-xs"><b>${e.name}</b> @ ${e.time_min.toFixed(2)}분</p>`).join(''):'<p class="text-xs text-gray-400">없음</p>';
+  const si=document.getElementById('signalInfo');
+  const tracks=d.trackNames||[];
+  const hasPleth=tracks.some(t=>t.toUpperCase().includes('PLETH'));
+  const hasIBP=tracks.some(t=>t.toUpperCase().includes('IBP'));
+  let sigHtml=`<p class="text-xs"><b>전체 트랙:</b> ${tracks.length}개</p>`;
+  sigHtml+=`<p class="text-xs"><b>샘플링:</b> 125 Hz</p>`;
+  sigHtml+=`<p class="text-xs"><b>PLETH:</b> ${hasPleth?'<span class="text-green-600 font-bold">있음</span>':'<span class="text-red-500">없음</span>'}</p>`;
+  sigHtml+=`<p class="text-xs"><b>IBP1:</b> ${hasIBP?'<span class="text-green-600 font-bold">있음</span>':'<span class="text-red-500">없음</span>'}</p>`;
+  if(hasPleth&&hasIBP) sigHtml+=`<p class="text-xs mt-1 text-blue-600 font-medium">PPG→ABP 분석 가능</p>`;
+  si.innerHTML=sigHtml;
   const pairs=[];const L=d.eegLabels;
   for(let i=0;i<L.length;i++)for(let j=i+1;j<L.length;j++)pairs.push([L[i],L[j]]);
   const key=new Set(['EEG_L1-EEG_R1','EEG_L2-EEG_R2','EEG_L-EEG_R','EEG_L1-EEG_L2','EEG_R1-EEG_R2']);
@@ -256,7 +363,7 @@ function switchTab(i){
   document.querySelectorAll('.tab-btn').forEach((b,j)=>b.classList.toggle('active',j===i));
   document.querySelectorAll('.tab-panel').forEach((p,j)=>p.classList.toggle('active',j===i));
   if(!S.load)return;
-  if(!S.tabOk[i]){S.tabOk[i]=1;[loadSpec,loadConn,loadAdv,loadSum][i]();}
+  if(!S.tabOk[i]){S.tabOk[i]=1;[loadSpec,loadConn,loadAdv,loadSum,loadPPG2ABP][i]();}
 }
 
 function show(id){document.getElementById(id)?.classList.remove('hidden');}
@@ -475,6 +582,236 @@ function renderSum(){
   }
   document.getElementById('conn_table_sec').innerHTML='';
   document.getElementById('graph_table_sec').innerHTML='';
+}
+
+// ── Tab 4: Research (PPG2ABP) ──
+async function loadPPG2ABP(){
+  if(S.ppg){renderPPG2ABP(S.ppg);return;}
+  if(!S.storagePath){
+    document.getElementById('ppg2abp_status').innerHTML='<p class="p-4 bg-yellow-50 text-yellow-700 rounded-lg">Vital 파일을 업로드하면 PLETH/IBP1 데이터를 분석합니다.</p>';
+    return;
+  }
+  show('ppg2abp_loading');
+  try{
+    S.ppg=await api('ppg2abp');
+    renderPPG2ABP(S.ppg);
+  }catch(e){
+    document.getElementById('ppg2abp_status').innerHTML=`<p class="text-red-500">오류: ${e.message}</p>`;
+  }
+  hide('ppg2abp_loading');
+}
+
+function renderPPG2ABP(d){
+  if(d.error){
+    document.getElementById('ppg2abp_status').innerHTML=`<p class="p-4 bg-yellow-50 text-yellow-700 rounded-lg">${d.error}</p>`;
+    return;
+  }
+
+  // Update sidebar with PPG2ABP summary
+  const si2=document.getElementById('signalInfo');
+  if(si2){
+    let sh=si2.innerHTML;
+    sh+=`<hr class="my-2 border-gray-200">`;
+    sh+=`<p class="text-xs font-bold text-gray-700">PPG→ABP 분석</p>`;
+    sh+=`<p class="text-xs"><b>세그먼트:</b> ${d.nSegments}개 (${d.duration_min.toFixed(1)}분)</p>`;
+    sh+=`<p class="text-xs"><b>Train/Test:</b> ${d.trainN} / ${d.testN}</p>`;
+    sh+=`<p class="text-xs"><b>SBP:</b> ${d.sbpStats.mean.toFixed(0)}±${d.sbpStats.std.toFixed(0)} mmHg</p>`;
+    sh+=`<p class="text-xs"><b>DBP:</b> ${d.dbpStats.mean.toFixed(0)}±${d.dbpStats.std.toFixed(0)} mmHg</p>`;
+    sh+=`<p class="text-xs"><b>DL 모델:</b> ${d.hasDL?'<span class="text-green-600">U-Net + CNN-LSTM</span>':'<span class="text-gray-400">미사용</span>'}</p>`;
+    si2.innerHTML=sh;
+  }
+
+  // Stats
+  document.getElementById('ppg2abp_stats').innerHTML=`
+    <div class="bg-green-50 rounded-xl p-4 mb-4">
+      <h4 class="font-bold text-green-800 mb-2">업로드 파일 분석 결과</h4>
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+        <div class="bg-white rounded-lg p-2 text-center"><p class="text-gray-500">총 세그먼트</p><p class="text-xl font-bold">${d.nSegments}</p></div>
+        <div class="bg-white rounded-lg p-2 text-center"><p class="text-gray-500">기록 시간</p><p class="text-xl font-bold">${d.duration_min.toFixed(1)}분</p></div>
+        <div class="bg-white rounded-lg p-2 text-center"><p class="text-gray-500">SBP</p><p class="text-xl font-bold">${d.sbpStats.mean.toFixed(0)}±${d.sbpStats.std.toFixed(0)}</p></div>
+        <div class="bg-white rounded-lg p-2 text-center"><p class="text-gray-500">DBP</p><p class="text-xl font-bold">${d.dbpStats.mean.toFixed(0)}±${d.dbpStats.std.toFixed(0)}</p></div>
+        <div class="bg-white rounded-lg p-2 text-center"><p class="text-gray-500">Train/Test</p><p class="text-xl font-bold">${d.trainN}/${d.testN}</p></div>
+      </div>
+    </div>`;
+
+  // ── Zoomed Cardiac Cycles (2x2 grid, 4s windows with PPG overlay) ──
+  // ── Best/Median/Worst (3 stacked full 10s) ──
+  if(d.zoomedPanels && d.zoomedPanels.length && d.bmwCases && d.bmwCases.length){
+    let h='';
+    const isDL=d.hasDL;
+    // ROW 1: Zoomed 4s cardiac cycle panels (2x2) — matching slide 28 left
+    h+='<div class="mb-6">';
+    h+='<h4 class="font-bold text-center text-gray-800 mb-3" style="font-size:15px">Zoomed Waveform: Cardiac Cycle Detail (4s windows)</h4>';
+    h+='<div class="grid grid-cols-1 md:grid-cols-2 gap-3">';
+    d.zoomedPanels.forEach((_,i)=>{h+=`<div id="zoom_p${i}" style="height:320px;background:#f8f8f8;border:1px solid #ddd;border-radius:6px"></div>`;});
+    h+='</div></div>';
+    // ROW 2: Best/Median/Worst stacked — matching slide 28 right
+    h+='<div class="mb-4">';
+    h+='<h4 class="font-bold text-center text-gray-800 mb-3" style="font-size:15px">Waveform Reconstruction: Best / Median / Worst Cases</h4>';
+    d.bmwCases.forEach((_,i)=>{h+=`<div id="bmw_${i}" style="height:250px"></div>`;});
+    h+='</div>';
+    document.getElementById('ppg2abp_cardiac').innerHTML=h;
+    document.getElementById('ppg2abp_bmw').innerHTML='';
+
+    // ── Zoomed panels (slide 28 left style) ──
+    d.zoomedPanels.forEach((p,i)=>{
+      let traces=[
+        {x:p.time,y:p.actual,name:'Actual ABP',type:'scatter',mode:'lines',
+         line:{color:'black',width:2.5}},
+      ];
+      let line1=`Segment #${p.seg_idx}`;
+      let line2='';
+      if(isDL && p.unet){
+        traces.push({x:p.time,y:p.unet,name:'U-Net',type:'scatter',mode:'lines',
+          line:{color:'#d62728',width:1.8,dash:'dash'}});
+        traces.push({x:p.time,y:p.cnn_lstm,name:'CNN-LSTM',type:'scatter',mode:'lines',
+          line:{color:'#1f77b4',width:1.8,dash:'dot'}});
+        line2=`U-Net: r=${p.corr_unet.toFixed(3)}, RMSE=${p.rmse_unet.toFixed(1)}  |  CNN-LSTM: r=${p.corr_lstm.toFixed(3)}, RMSE=${p.rmse_lstm.toFixed(1)}`;
+      }else{
+        traces.push({x:p.time,y:p.adaptive,name:'Adaptive',type:'scatter',mode:'lines',
+          line:{color:'#d62728',width:1.5,dash:'dash'}});
+        traces.push({x:p.time,y:p.transfer_fn,name:'Transfer Fn',type:'scatter',mode:'lines',
+          line:{color:'#1f77b4',width:1.5,dash:'dot'}});
+        line2=`Adaptive: r=${p.corr_adaptive.toFixed(3)}, RMSE=${p.rmse_adaptive.toFixed(1)}  |  TF: r=${p.corr_tf.toFixed(3)}, RMSE=${p.rmse_tf.toFixed(1)}`;
+      }
+      // PPG on secondary y-axis (light green, semi-transparent)
+      traces.push({x:p.time,y:p.ppg,name:'PPG (input)',type:'scatter',mode:'lines',
+        yaxis:'y2',line:{color:'rgba(100,200,100,0.35)',width:1.2}});
+      Plotly.newPlot(`zoom_p${i}`,traces,{
+        title:{text:`<b>${line1}</b><br><span style="font-size:10px;color:#555">${line2}</span>`,font:{size:11},x:0.02,xanchor:'left'},
+        xaxis:{title:'Time (s)',titlefont:{size:10},tickfont:{size:9},gridcolor:'#e0e0e0',zeroline:false},
+        yaxis:{title:'ABP (mmHg)',titlefont:{size:10},tickfont:{size:9},gridcolor:'#e0e0e0',zeroline:true,zerolinecolor:'#ccc'},
+        yaxis2:{title:'PPG',titlefont:{size:9,color:'#7bc47b'},tickfont:{size:8,color:'#7bc47b'},overlaying:'y',side:'right',showgrid:false},
+        showlegend:i===0,
+        legend:{font:{size:9},orientation:'v',x:1.12,xanchor:'left',y:1,yanchor:'top',bgcolor:'rgba(255,255,255,0.85)',bordercolor:'#ccc',borderwidth:1},
+        margin:{t:50,b:45,l:50,r:100},
+        plot_bgcolor:'#f8f8f8',paper_bgcolor:'#f8f8f8',
+      },{responsive:true});
+    });
+
+    // ── BMW stacked (slide 28 right style) ──
+    const bmwTC={'Best':'#008000','Median':'#ff8c00','Worst':'#cc0000'};
+    d.bmwCases.forEach((c,i)=>{
+      const tc=bmwTC[c.label];
+      let traces=[
+        {x:c.time,y:c.actual,name:'Actual ABP',type:'scatter',mode:'lines',
+         line:{color:'black',width:2.5}},
+      ];
+      let metricStr='';
+      if(isDL && c.unet){
+        traces.push({x:c.time,y:c.unet,name:'U-Net',type:'scatter',mode:'lines',
+          line:{color:'#d62728',width:1.8,dash:'dash'}});
+        traces.push({x:c.time,y:c.cnn_lstm,name:'CNN-LSTM',type:'scatter',mode:'lines',
+          line:{color:'#1f77b4',width:1.8,dash:'dot'}});
+        metricStr=`U-Net: r=${c.corr_unet.toFixed(3)}, RMSE=${c.rmse_unet.toFixed(1)}  |  CNN-LSTM: r=${c.corr_lstm.toFixed(3)}, RMSE=${c.rmse_lstm.toFixed(1)}`;
+      }else{
+        traces.push({x:c.time,y:c.adaptive,name:'Adaptive',type:'scatter',mode:'lines',
+          line:{color:'#d62728',width:1.5,dash:'dash'}});
+        traces.push({x:c.time,y:c.transfer_fn,name:'Transfer Fn',type:'scatter',mode:'lines',
+          line:{color:'#1f77b4',width:1.5,dash:'dot'}});
+        metricStr=`Adaptive: r=${c.corr_adaptive.toFixed(3)}, RMSE=${c.rmse_adaptive.toFixed(1)}  |  TF: r=${c.corr_tf.toFixed(3)}, RMSE=${c.rmse_tf.toFixed(1)}`;
+      }
+      Plotly.newPlot(`bmw_${i}`,traces,{
+        title:{text:`<span style="color:${tc};font-weight:bold">${c.label} Case</span> - Seg #${c.seg_idx}  |  ${metricStr}`,font:{size:11},x:0.5,xanchor:'center'},
+        xaxis:{title:i===2?'Time (seconds)':'',titlefont:{size:10},tickfont:{size:9},gridcolor:'#e8e8e8',zeroline:false},
+        yaxis:{title:'ABP (mmHg)',titlefont:{size:10},tickfont:{size:9},gridcolor:'#e8e8e8',zeroline:true,zerolinecolor:'#ccc'},
+        showlegend:i===0,
+        legend:{font:{size:9},orientation:'h',y:1.18,x:0.5,xanchor:'center',bgcolor:'rgba(255,255,255,0.8)',bordercolor:'#ddd',borderwidth:1},
+        margin:{t:i===0?48:35,b:i===2?42:12,l:50,r:15},
+        plot_bgcolor:'white',
+      },{responsive:true});
+    });
+  }
+
+  // Waveform examples
+  let wh='<h4 class="font-bold text-gray-700 mb-2 mt-6">파형 재구성 비교 (Test 세그먼트)</h4>';
+  wh+='<div class="grid grid-cols-1 gap-3">';
+  d.waveformExamples.forEach((ex,i)=>{
+    wh+=`<div id="wf_ex_${i}" style="height:260px"></div>`;
+  });
+  wh+='</div>';
+  document.getElementById('ppg2abp_waveform').innerHTML=wh;
+
+  d.waveformExamples.forEach((ex,i)=>{
+    const traces=[
+      {x:ex.time,y:ex.actual_abp,name:'Actual ABP (IBP1)',type:'scatter',mode:'lines',line:{color:'#1a1a2e',width:2}},
+      {x:ex.time,y:ex.adaptive,name:'Adaptive Scaling',type:'scatter',mode:'lines',line:{color:'#e74c3c',width:1.2,dash:'dash'}},
+      {x:ex.time,y:ex.transfer_fn,name:'Transfer Function',type:'scatter',mode:'lines',line:{color:'#2980b9',width:1.2,dash:'dash'}},
+    ];
+    const corrAd=pearsonCorr(ex.actual_abp,ex.adaptive);
+    const corrTf=pearsonCorr(ex.actual_abp,ex.transfer_fn);
+    Plotly.newPlot(`wf_ex_${i}`,traces,{
+      title:{text:`Segment ${ex.seg_idx} | Adaptive r=${corrAd.toFixed(3)} | TF r=${corrTf.toFixed(3)}`,font:{size:11}},
+      xaxis:{title:'Time (s)'},yaxis:{title:'ABP (mmHg)'},
+      legend:{orientation:'h',y:-0.2,font:{size:9}},margin:{t:35,b:60}
+    },{responsive:true});
+  });
+
+  // SBP/DBP time series
+  const N=d.sbpSeries.actual.length;
+  const xIdx=Array.from({length:N},(_,i)=>i);
+
+  let th='<h4 class="font-bold text-gray-700 mb-2 mt-6">SBP / DBP 시계열 비교 (Test Set)</h4>';
+  th+='<div class="grid grid-cols-1 md:grid-cols-2 gap-3">';
+  th+='<div id="ts_sbp" style="height:300px"></div><div id="ts_dbp" style="height:300px"></div>';
+  th+='</div>';
+  document.getElementById('ppg2abp_timeseries').innerHTML=th;
+
+  const sbpTraces=[
+    {x:xIdx,y:d.sbpSeries.actual,name:'Actual',type:'scatter',mode:'lines',line:{color:'#1a1a2e',width:2}},
+    {x:xIdx,y:d.sbpSeries.baseline,name:'Baseline',type:'scatter',mode:'lines',line:{color:'#95a5a6',width:1,dash:'dot'}},
+    {x:xIdx,y:d.sbpSeries.linear,name:'Linear Reg.',type:'scatter',mode:'lines',line:{color:'#f39c12',width:1.2,dash:'dash'}},
+    {x:xIdx,y:d.sbpSeries.adaptive,name:'Adaptive',type:'scatter',mode:'lines',line:{color:'#e74c3c',width:1.2,dash:'dash'}},
+    {x:xIdx,y:d.sbpSeries.transfer_fn,name:'Transfer Fn',type:'scatter',mode:'lines',line:{color:'#2980b9',width:1.2,dash:'dash'}},
+  ];
+  Plotly.newPlot('ts_sbp',sbpTraces,{title:{text:'SBP Prediction',font:{size:12}},xaxis:{title:'Segment'},yaxis:{title:'SBP (mmHg)'},legend:{font:{size:8},orientation:'h',y:-0.25},margin:{t:35,b:60}},{responsive:true});
+
+  const dbpTraces=[
+    {x:xIdx,y:d.dbpSeries.actual,name:'Actual',type:'scatter',mode:'lines',line:{color:'#1a1a2e',width:2}},
+    {x:xIdx,y:d.dbpSeries.baseline,name:'Baseline',type:'scatter',mode:'lines',line:{color:'#95a5a6',width:1,dash:'dot'}},
+    {x:xIdx,y:d.dbpSeries.linear,name:'Linear Reg.',type:'scatter',mode:'lines',line:{color:'#f39c12',width:1.2,dash:'dash'}},
+    {x:xIdx,y:d.dbpSeries.adaptive,name:'Adaptive',type:'scatter',mode:'lines',line:{color:'#e74c3c',width:1.2,dash:'dash'}},
+    {x:xIdx,y:d.dbpSeries.transfer_fn,name:'Transfer Fn',type:'scatter',mode:'lines',line:{color:'#2980b9',width:1.2,dash:'dash'}},
+  ];
+  Plotly.newPlot('ts_dbp',dbpTraces,{title:{text:'DBP Prediction',font:{size:12}},xaxis:{title:'Segment'},yaxis:{title:'DBP (mmHg)'},legend:{font:{size:8},orientation:'h',y:-0.25},margin:{t:35,b:60}},{responsive:true});
+
+  // Correlation time series
+  document.getElementById('ppg2abp_correlation').innerHTML='<h4 class="font-bold text-gray-700 mb-2 mt-6">파형 상관계수 (Per-Segment)</h4><div id="corr_ts" style="height:280px"></div>';
+  Plotly.newPlot('corr_ts',[
+    {x:xIdx,y:d.corrSeries.adaptive,name:'Adaptive Scaling',type:'scatter',mode:'lines',line:{color:'#e74c3c',width:1.5}},
+    {x:xIdx,y:d.corrSeries.transfer_fn,name:'Transfer Function',type:'scatter',mode:'lines',line:{color:'#2980b9',width:1.5}},
+  ],{title:{text:'Waveform Correlation per Segment',font:{size:12}},xaxis:{title:'Segment'},yaxis:{title:'Correlation',range:[-0.2,1]},legend:{font:{size:9}},margin:{t:35,b:50}},{responsive:true});
+
+  // Model metrics comparison table
+  let mh='<h4 class="font-bold text-gray-700 mb-2 mt-6">모델 성능 비교 (이 파일 기준)</h4>';
+  mh+='<div class="overflow-x-auto"><table class="min-w-full text-sm border"><thead class="bg-gray-100"><tr><th class="px-3 py-2 border">Model</th><th class="px-3 py-2 border">SBP MAE</th><th class="px-3 py-2 border">DBP MAE</th><th class="px-3 py-2 border">WF Corr</th></tr></thead><tbody>';
+  Object.entries(d.models).forEach(([name,m])=>{
+    mh+=`<tr><td class="px-3 py-1 border font-medium">${name}</td><td class="px-3 py-1 border">${m.sbp_mae.toFixed(2)}</td><td class="px-3 py-1 border">${m.dbp_mae.toFixed(2)}</td><td class="px-3 py-1 border">${m.wf_corr.toFixed(3)}</td></tr>`;
+  });
+  mh+='</tbody></table></div>';
+
+  // Add reference comparison
+  mh+='<h4 class="font-bold text-gray-700 mb-2 mt-4">DL 모델 참조 성능 (46명 데이터 학습 기준)</h4>';
+  mh+='<div class="overflow-x-auto"><table class="min-w-full text-sm border"><thead class="bg-blue-50"><tr><th class="px-3 py-2 border">Model</th><th class="px-3 py-2 border">SBP MAE</th><th class="px-3 py-2 border">DBP MAE</th><th class="px-3 py-2 border">SBP R²</th><th class="px-3 py-2 border">WF Corr / RMSE</th><th class="px-3 py-2 border">BHS</th></tr></thead><tbody>';
+  Object.entries(d.referenceModels).forEach(([name,m])=>{
+    if(m.type==='waveform'){
+      mh+=`<tr class="bg-purple-50"><td class="px-3 py-1 border font-medium">${name}</td><td class="px-3 py-1 border">-</td><td class="px-3 py-1 border">-</td><td class="px-3 py-1 border">-</td><td class="px-3 py-1 border">r=${m.wf_corr} / ${m.wf_rmse}</td><td class="px-3 py-1 border">-</td></tr>`;
+    }else{
+      mh+=`<tr><td class="px-3 py-1 border font-medium">${name}</td><td class="px-3 py-1 border">${m.sbp_mae}</td><td class="px-3 py-1 border">${m.dbp_mae}</td><td class="px-3 py-1 border">${m.sbp_r2}</td><td class="px-3 py-1 border">-</td><td class="px-3 py-1 border">${m.dbp_bhs}</td></tr>`;
+    }
+  });
+  mh+='</tbody></table></div>';
+  document.getElementById('ppg2abp_metrics').innerHTML=mh;
+}
+
+function pearsonCorr(x,y){
+  const n=Math.min(x.length,y.length);
+  if(n<2)return 0;
+  let sx=0,sy=0,sxy=0,sx2=0,sy2=0;
+  for(let i=0;i<n;i++){sx+=x[i];sy+=y[i];sxy+=x[i]*y[i];sx2+=x[i]*x[i];sy2+=y[i]*y[i];}
+  const num=n*sxy-sx*sy;
+  const den=Math.sqrt((n*sx2-sx*sx)*(n*sy2-sy*sy));
+  return den>0?num/den:0;
 }
 
 // ── Init ──

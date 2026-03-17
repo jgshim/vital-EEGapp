@@ -14,12 +14,119 @@ import threading
 import numpy as np
 from scipy import signal
 from scipy.sparse.csgraph import shortest_path
+from scipy.ndimage import uniform_filter1d
 from itertools import combinations
 from collections import Counter
 from math import factorial
 from supabase import create_client
 
 logging.basicConfig(level=logging.INFO)
+
+# ── DL waveform models (lazy-loaded) ────────────────────────
+_DL_MODELS = {}  # {'unet': model, 'cnn_lstm': model, 'norm': {...}}
+
+def _load_dl_models():
+    """Load U-Net and CNN-LSTM PyTorch models if available."""
+    if _DL_MODELS.get('loaded'):
+        return _DL_MODELS.get('ok', False)
+    _DL_MODELS['loaded'] = True
+    _DL_MODELS['ok'] = False
+    try:
+        import torch
+        import torch.nn as nn
+        import torch.nn.functional as F
+
+        DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        MODEL_DIR = 'C:/Users/jaege/Desktop/Study/PPG2ABP/models'
+
+        # --- Model definitions (must match training code) ---
+        class UNetBlock(nn.Module):
+            def __init__(self, in_ch, out_ch, k=5):
+                super().__init__()
+                self.conv = nn.Sequential(
+                    nn.Conv1d(in_ch, out_ch, k, padding=k//2),
+                    nn.BatchNorm1d(out_ch), nn.ReLU(),
+                    nn.Conv1d(out_ch, out_ch, k, padding=k//2),
+                    nn.BatchNorm1d(out_ch), nn.ReLU())
+            def forward(self, x): return self.conv(x)
+
+        class UNet1D(nn.Module):
+            def __init__(self, n_demo=2):
+                super().__init__()
+                self.enc1=UNetBlock(1,32);self.enc2=UNetBlock(32,64);self.enc3=UNetBlock(64,128);self.enc4=UNetBlock(128,256)
+                self.pool=nn.MaxPool1d(2);self.bottleneck=UNetBlock(256,512)
+                self.film_gamma=nn.Linear(n_demo,512);self.film_beta=nn.Linear(n_demo,512)
+                self.up4=nn.ConvTranspose1d(512,256,2,stride=2);self.dec4=UNetBlock(512,256)
+                self.up3=nn.ConvTranspose1d(256,128,2,stride=2);self.dec3=UNetBlock(256,128)
+                self.up2=nn.ConvTranspose1d(128,64,2,stride=2);self.dec2=UNetBlock(128,64)
+                self.up1=nn.ConvTranspose1d(64,32,2,stride=2);self.dec1=UNetBlock(64,32)
+                self.final=nn.Conv1d(32,1,1)
+            def forward(self, ppg, demo):
+                ol=ppg.size(-1);pl=(16-ol%16)%16
+                if pl>0:ppg=F.pad(ppg,(0,pl))
+                e1=self.enc1(ppg);e2=self.enc2(self.pool(e1));e3=self.enc3(self.pool(e2));e4=self.enc4(self.pool(e3))
+                b=self.bottleneck(self.pool(e4))
+                g=self.film_gamma(demo).unsqueeze(-1);bt=self.film_beta(demo).unsqueeze(-1);b=g*b+bt
+                d4=self.dec4(torch.cat([self.up4(b)[:,:,:e4.size(2)],e4],1))
+                d3=self.dec3(torch.cat([self.up3(d4)[:,:,:e3.size(2)],e3],1))
+                d2=self.dec2(torch.cat([self.up2(d3)[:,:,:e2.size(2)],e2],1))
+                d1=self.dec1(torch.cat([self.up1(d2)[:,:,:e1.size(2)],e1],1))
+                return self.final(d1)[:,:,:ol]
+
+        class CNNLSTM_WaveformModel(nn.Module):
+            def __init__(self, n_demo=2):
+                super().__init__()
+                self.enc=nn.Sequential(
+                    nn.Conv1d(1,32,7,padding=3),nn.BatchNorm1d(32),nn.ReLU(),
+                    nn.Conv1d(32,64,5,padding=2),nn.BatchNorm1d(64),nn.ReLU(),nn.MaxPool1d(2),
+                    nn.Conv1d(64,128,5,padding=2),nn.BatchNorm1d(128),nn.ReLU(),
+                    nn.Conv1d(128,128,3,padding=1),nn.BatchNorm1d(128),nn.ReLU(),nn.MaxPool1d(2))
+                self.film_gamma=nn.Linear(n_demo,128);self.film_beta=nn.Linear(n_demo,128)
+                self.lstm=nn.LSTM(128,128,num_layers=2,batch_first=True,bidirectional=True,dropout=0.2)
+                self.dec=nn.Sequential(
+                    nn.ConvTranspose1d(256,128,4,stride=2,padding=1),nn.BatchNorm1d(128),nn.ReLU(),
+                    nn.ConvTranspose1d(128,64,4,stride=2,padding=1),nn.BatchNorm1d(64),nn.ReLU(),
+                    nn.Conv1d(64,32,3,padding=1),nn.BatchNorm1d(32),nn.ReLU(),nn.Conv1d(32,1,1))
+            def forward(self, ppg, demo):
+                ol=ppg.size(-1);pl=(4-ol%4)%4
+                if pl>0:ppg=F.pad(ppg,(0,pl))
+                x=self.enc(ppg)
+                g=self.film_gamma(demo).unsqueeze(-1);bt=self.film_beta(demo).unsqueeze(-1);x=g*x+bt
+                x=x.permute(0,2,1);x,_=self.lstm(x);x=x.permute(0,2,1)
+                x=self.dec(x)
+                return x[:,:,:ol] if x.size(-1)>=ol else F.pad(x,(0,ol-x.size(-1)))
+
+        # --- Load weights ---
+        unet_path = os.path.join(MODEL_DIR, 'unet1d.pt')
+        lstm_path = os.path.join(MODEL_DIR, 'cnn_lstm.pt')
+        if not os.path.exists(unet_path) or not os.path.exists(lstm_path):
+            logging.warning("DL model weights not found")
+            return False
+
+        unet_ckpt = torch.load(unet_path, map_location=DEVICE, weights_only=False)
+        lstm_ckpt = torch.load(lstm_path, map_location=DEVICE, weights_only=False)
+
+        unet = UNet1D().to(DEVICE); unet.load_state_dict(unet_ckpt['model_state_dict']); unet.eval()
+        cnn_lstm = CNNLSTM_WaveformModel().to(DEVICE); cnn_lstm.load_state_dict(lstm_ckpt['model_state_dict']); cnn_lstm.eval()
+
+        _DL_MODELS['unet'] = unet
+        _DL_MODELS['cnn_lstm'] = cnn_lstm
+        _DL_MODELS['device'] = DEVICE
+        _DL_MODELS['torch'] = torch
+        _DL_MODELS['unet_norm'] = {'p_mu': unet_ckpt['p_mu'], 'p_sig': unet_ckpt['p_sig'],
+                                    'a_mu': unet_ckpt['a_mu'], 'a_sig': unet_ckpt['a_sig'],
+                                    'demo_mean': unet_ckpt['demo_scaler_mean'],
+                                    'demo_scale': unet_ckpt['demo_scaler_scale']}
+        _DL_MODELS['cnn_lstm_norm'] = {'p_mu': lstm_ckpt['p_mu'], 'p_sig': lstm_ckpt['p_sig'],
+                                    'a_mu': lstm_ckpt['a_mu'], 'a_sig': lstm_ckpt['a_sig'],
+                                    'demo_mean': lstm_ckpt['demo_scaler_mean'],
+                                    'demo_scale': lstm_ckpt['demo_scaler_scale']}
+        _DL_MODELS['ok'] = True
+        logging.info(f"DL models loaded on {DEVICE}")
+        return True
+    except Exception as e:
+        logging.warning(f"Failed to load DL models: {e}")
+        return False
 
 # ── Supabase ─────────────────────────────────────────────────
 SUPABASE_URL = "https://tcyapfwczeuhcqecxpdi.supabase.co"
@@ -506,11 +613,449 @@ def action_update_memo(body):
     return {"success": True}
 
 
+def action_ppg2abp(body):
+    import vitaldb
+    fb = get_file_bytes(body)
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".vital") as tmp:
+        tmp.write(fb)
+        tmp_path = tmp.name
+
+    try:
+        vf = vitaldb.VitalFile(tmp_path)
+        track_names = vf.get_track_names()
+
+        # Find PLETH and IBP1 tracks
+        pleth_track = next((t for t in track_names if 'PLETH' in t.upper()), None)
+        ibp1_track = next((t for t in track_names if 'IBP1' in t.upper()), None)
+
+        if not pleth_track or not ibp1_track:
+            return {"error": "PLETH or IBP1 track not found", "tracks": track_names}
+
+        SR = 125
+        pleth = vf.to_numpy(pleth_track, 1/SR)
+        ibp1 = vf.to_numpy(ibp1_track, 1/SR)
+
+        if pleth is None or ibp1 is None:
+            return {"error": "Failed to extract PLETH or IBP1 data"}
+
+        pleth = pleth.flatten()
+        ibp1 = ibp1.flatten()
+
+        # Align lengths
+        min_len = min(len(pleth), len(ibp1))
+        pleth = pleth[:min_len]
+        ibp1 = ibp1[:min_len]
+
+        # Interpolate NaN gaps (same as step1)
+        for sig in [pleth, ibp1]:
+            nans = np.isnan(sig)
+            if nans.any() and (~nans).sum() > 10:
+                sig[nans] = np.interp(np.where(nans)[0], np.where(~nans)[0], sig[~nans])
+            else:
+                sig[nans] = 0.0
+
+        # Save raw IBP1 stats before filtering (for display)
+        raw_ibp1_mean = float(np.mean(ibp1[ibp1 != 0]))
+
+        # Bandpass filter (matching step1 preprocessing exactly)
+        from scipy.signal import butter, filtfilt
+        def bp_filter(sig, lo, hi, fs, order=4):
+            nyq = fs / 2
+            b, a = butter(order, [lo / nyq, hi / nyq], btype='band')
+            return filtfilt(b, a, sig)
+
+        # Apply same filters as training: PLETH 0.5-8Hz, IBP1 0.5-40Hz
+        try:
+            pleth = bp_filter(pleth, 0.5, 8.0, SR).astype(np.float32)
+            ibp1 = bp_filter(ibp1, 0.5, 40.0, SR).astype(np.float32)
+        except Exception:
+            pass  # fallback to unfiltered if signal too short
+
+        # Segment into 10s windows
+        seg_len = SR * 10  # 1250 points
+        n_segs = min_len // seg_len
+        if n_segs == 0:
+            return {"error": "Data too short for segmentation"}
+
+        pleth_segs = pleth[:n_segs * seg_len].reshape(n_segs, seg_len)
+        ibp1_segs = ibp1[:n_segs * seg_len].reshape(n_segs, seg_len)
+
+        # Quality filter - remove segments with flat signals
+        good_segs = []
+        for i in range(n_segs):
+            if np.std(pleth_segs[i]) > 1e-6 and np.std(ibp1_segs[i]) > 1e-6:
+                good_segs.append(i)
+
+        if len(good_segs) < 2:
+            return {"error": "Not enough valid segments"}
+
+        pleth_segs = pleth_segs[good_segs]
+        ibp1_segs = ibp1_segs[good_segs]
+        n_segs = len(good_segs)
+
+        # Extract SBP/DBP from each segment (in filtered domain, zero-centered)
+        true_sbp_filt = np.array([seg.max() for seg in ibp1_segs])
+        true_dbp_filt = np.array([seg.min() for seg in ibp1_segs])
+        # For display, add raw offset back to get physiological mmHg values
+        true_sbp = true_sbp_filt + raw_ibp1_mean
+        true_dbp = true_dbp_filt + raw_ibp1_mean
+        true_mbp = np.array([seg.mean() for seg in ibp1_segs]) + raw_ibp1_mean
+
+        # ---- Model 1: Baseline (Mean Prediction) ----
+        train_n = int(n_segs * 0.8)
+        test_n = n_segs - train_n
+
+        mean_sbp = float(np.mean(true_sbp[:train_n]))
+        mean_dbp = float(np.mean(true_dbp[:train_n]))
+        baseline_sbp_pred = np.full(test_n, mean_sbp)
+        baseline_dbp_pred = np.full(test_n, mean_dbp)
+
+        # ---- Model 2: Linear Regression (PPG features -> BP) ----
+        # Extract simple features: mean, std, max, min, peak-to-peak
+        def extract_features(segs):
+            feats = []
+            for s in segs:
+                feats.append([np.mean(s), np.std(s), np.max(s), np.min(s),
+                              np.max(s) - np.min(s), np.median(s)])
+            return np.array(feats)
+
+        train_feats = extract_features(pleth_segs[:train_n])
+        test_feats = extract_features(pleth_segs[train_n:])
+
+        # Add bias
+        train_X = np.column_stack([train_feats, np.ones(train_n)])
+        test_X = np.column_stack([test_feats, np.ones(test_n)])
+
+        # Least squares for SBP and DBP
+        try:
+            w_sbp, _, _, _ = np.linalg.lstsq(train_X, true_sbp[:train_n], rcond=None)
+            w_dbp, _, _, _ = np.linalg.lstsq(train_X, true_dbp[:train_n], rcond=None)
+            lr_sbp_pred = test_X @ w_sbp
+            lr_dbp_pred = test_X @ w_dbp
+        except:
+            lr_sbp_pred = baseline_sbp_pred.copy()
+            lr_dbp_pred = baseline_dbp_pred.copy()
+
+        # ---- Model 3: Adaptive Waveform Scaling ----
+        # Learn amplitude/offset mapping from PPG to ABP
+        train_pleth_flat = pleth_segs[:train_n].flatten()
+        train_ibp1_flat = ibp1_segs[:train_n].flatten()
+
+        p_mu, p_sig = np.mean(train_pleth_flat), np.std(train_pleth_flat) + 1e-8
+        a_mu, a_sig = np.mean(train_ibp1_flat), np.std(train_ibp1_flat) + 1e-8
+
+        # Scale PPG to ABP range
+        adaptive_recon = []
+        for seg in pleth_segs[train_n:]:
+            normalized = (seg - p_mu) / p_sig
+            reconstructed = normalized * a_sig + a_mu
+            adaptive_recon.append(reconstructed)
+        adaptive_recon = np.array(adaptive_recon)
+
+        # ---- Model 4: Frequency-domain Transfer Function (Wiener) ----
+        nfft = seg_len
+        Sxy = np.zeros(nfft // 2 + 1, dtype=complex)
+        Sxx = np.zeros(nfft // 2 + 1)
+        n_tf = min(train_n, 200)
+        for i in range(n_tf):
+            X = np.fft.rfft(pleth_segs[i])
+            Y = np.fft.rfft(ibp1_segs[i])
+            Sxy += Y * np.conj(X)
+            Sxx += np.abs(X) ** 2
+        # Wiener-style regularized transfer function
+        reg = np.mean(Sxx) * 0.01
+        H_avg = Sxy / (Sxx + reg)
+
+        H_smooth_real = uniform_filter1d(np.real(H_avg), size=7)
+        H_smooth_imag = uniform_filter1d(np.imag(H_avg), size=7)
+        H_smooth = H_smooth_real + 1j * H_smooth_imag
+
+        # Clip magnitude to prevent blow-up
+        H_mag = np.abs(H_smooth)
+        H_clip = np.where(H_mag > 50, H_smooth * 50 / (H_mag + 1e-10), H_smooth)
+
+        abp_mu = np.mean(ibp1_segs[:train_n])
+        abp_std = np.std(ibp1_segs[:train_n]) + 1e-8
+        tf_recon = []
+        for seg in pleth_segs[train_n:]:
+            X = np.fft.rfft(seg)
+            Y_est = X * H_clip
+            recon = np.fft.irfft(Y_est, n=seg_len)
+            # Normalize then rescale to ABP range
+            r_mu, r_std = np.mean(recon), np.std(recon) + 1e-8
+            recon = (recon - r_mu) / r_std * abp_std + abp_mu
+            recon = np.clip(recon, abp_mu - 4 * abp_std, abp_mu + 4 * abp_std)
+            tf_recon.append(recon)
+        tf_recon = np.array(tf_recon)
+
+        # ---- Compute Metrics for Test Set ----
+        test_true_sbp = true_sbp[train_n:]
+        test_true_dbp = true_dbp[train_n:]
+        test_ibp1 = ibp1_segs[train_n:]
+        test_pleth = pleth_segs[train_n:]
+
+        models = {}
+
+        # Baseline
+        bl_sbp_mae = float(np.mean(np.abs(baseline_sbp_pred - test_true_sbp)))
+        bl_dbp_mae = float(np.mean(np.abs(baseline_dbp_pred - test_true_dbp)))
+        models['Baseline (Mean)'] = {'sbp_mae': bl_sbp_mae, 'dbp_mae': bl_dbp_mae, 'wf_corr': 0.0}
+
+        # Linear Regression
+        lr_sbp_mae = float(np.mean(np.abs(lr_sbp_pred - test_true_sbp)))
+        lr_dbp_mae = float(np.mean(np.abs(lr_dbp_pred - test_true_dbp)))
+        models['Linear Regression'] = {'sbp_mae': lr_sbp_mae, 'dbp_mae': lr_dbp_mae, 'wf_corr': 0.0}
+
+        # Adaptive Scaling (add offset for mmHg comparison)
+        ad_sbp = np.array([s.max() for s in adaptive_recon]) + raw_ibp1_mean
+        ad_dbp = np.array([s.min() for s in adaptive_recon]) + raw_ibp1_mean
+        ad_corrs = [float(np.corrcoef(test_ibp1[i], adaptive_recon[i])[0,1])
+                    for i in range(test_n) if not np.isnan(np.corrcoef(test_ibp1[i], adaptive_recon[i])[0,1])]
+        models['Adaptive Scaling'] = {
+            'sbp_mae': float(np.mean(np.abs(ad_sbp - test_true_sbp))),
+            'dbp_mae': float(np.mean(np.abs(ad_dbp - test_true_dbp))),
+            'wf_corr': float(np.mean(ad_corrs)) if ad_corrs else 0.0
+        }
+
+        # Transfer Function (add offset for mmHg comparison)
+        tf_sbp = np.array([s.max() for s in tf_recon]) + raw_ibp1_mean
+        tf_dbp = np.array([s.min() for s in tf_recon]) + raw_ibp1_mean
+        tf_corrs = [float(np.corrcoef(test_ibp1[i], tf_recon[i])[0,1])
+                    for i in range(test_n) if not np.isnan(np.corrcoef(test_ibp1[i], tf_recon[i])[0,1])]
+        models['Transfer Function'] = {
+            'sbp_mae': float(np.mean(np.abs(tf_sbp - test_true_sbp))),
+            'dbp_mae': float(np.mean(np.abs(tf_dbp - test_true_dbp))),
+            'wf_corr': float(np.mean(tf_corrs)) if tf_corrs else 0.0
+        }
+
+        # ---- DL Model Inference (U-Net, CNN-LSTM) ----
+        has_dl = _load_dl_models()
+        unet_recon = None
+        lstm_recon = None
+        if has_dl:
+            torch = _DL_MODELS['torch']
+            device = _DL_MODELS['device']
+            # Default demo: age=5, sex=0 (no patient info in uploaded file)
+            demo_raw = np.array([[5.0, 0.0]], dtype=np.float32)
+            for mkey, mname in [('unet', 'U-Net 1D'), ('cnn_lstm', 'CNN-LSTM')]:
+                model = _DL_MODELS[mkey]
+                norm = _DL_MODELS[f'{mkey}_norm']
+                # Normalize PPG
+                ppg_norm = (test_pleth - norm['p_mu']) / (norm['p_sig'] + 1e-8)
+                # Normalize demo
+                dm = np.array(norm['demo_mean']); ds_arr = np.array(norm['demo_scale'])
+                demo_s = ((demo_raw - dm) / (ds_arr + 1e-8)).astype(np.float32)
+                demo_batch = np.repeat(demo_s, test_n, axis=0)
+                # Batch inference
+                recon_all = []
+                bs = 128
+                with torch.no_grad():
+                    for start in range(0, test_n, bs):
+                        end = min(start + bs, test_n)
+                        ppg_t = torch.FloatTensor(ppg_norm[start:end]).unsqueeze(1).to(device)
+                        demo_t = torch.FloatTensor(demo_batch[start:end]).to(device)
+                        pred = model(ppg_t, demo_t).cpu().numpy().squeeze(1)
+                        recon_all.append(pred)
+                recon_arr = np.concatenate(recon_all, axis=0)
+                # Denormalize
+                recon_arr = recon_arr * norm['a_sig'] + norm['a_mu']
+                if mkey == 'unet':
+                    unet_recon = recon_arr
+                else:
+                    lstm_recon = recon_arr
+
+        # Reference results from our deep learning experiments
+        reference_models = {
+            'XGBoost (LOSO)': {'sbp_mae': 14.98, 'dbp_mae': 8.66, 'sbp_r2': -0.19, 'dbp_bhs': 'D'},
+            'LightGBM (LOSO)': {'sbp_mae': 16.09, 'dbp_mae': 8.42, 'sbp_r2': -0.34, 'dbp_bhs': 'D'},
+            'Improved CNN (GPU)': {'sbp_mae': 12.64, 'dbp_mae': 7.20, 'sbp_r2': 0.17, 'dbp_bhs': 'C'},
+            'ResNet1D (GPU)': {'sbp_mae': 12.25, 'dbp_mae': 7.83, 'sbp_r2': 0.20, 'dbp_bhs': 'D'},
+            'CNN-LSTM (GPU)': {'wf_corr': 0.562, 'wf_rmse': 13.86, 'type': 'waveform'},
+            'U-Net 1D (GPU)': {'wf_corr': 0.566, 'wf_rmse': 13.70, 'type': 'waveform'},
+        }
+
+        # Select example segments for visualization (5 segments from test set)
+        n_show = min(5, test_n)
+        show_idx = np.linspace(0, test_n - 1, n_show, dtype=int)
+
+        # Downsample waveforms for JSON transfer (every 5th point)
+        ds = 5
+        waveform_examples = []
+        for idx in show_idx:
+            t = (np.arange(seg_len) / SR)[::ds].tolist()
+            waveform_examples.append({
+                'time': t,
+                'actual_abp': (ibp1_segs[train_n + idx] + raw_ibp1_mean)[::ds].tolist(),
+                'ppg': pleth_segs[train_n + idx][::ds].tolist(),
+                'adaptive': (adaptive_recon[idx] + raw_ibp1_mean)[::ds].tolist(),
+                'transfer_fn': (tf_recon[idx] + raw_ibp1_mean)[::ds].tolist(),
+                'seg_idx': int(good_segs[train_n + idx]),
+            })
+
+        # Time series of SBP/DBP for all test segments
+        sbp_series = {
+            'actual': test_true_sbp.tolist(),
+            'baseline': baseline_sbp_pred.tolist(),
+            'linear': lr_sbp_pred.tolist(),
+            'adaptive': ad_sbp.tolist(),
+            'transfer_fn': tf_sbp.tolist(),
+        }
+        dbp_series = {
+            'actual': test_true_dbp.tolist(),
+            'baseline': baseline_dbp_pred.tolist(),
+            'linear': lr_dbp_pred.tolist(),
+            'adaptive': ad_dbp.tolist(),
+            'transfer_fn': tf_dbp.tolist(),
+        }
+
+        # Per-segment correlation for waveform models
+        corr_series = {
+            'adaptive': [float(np.corrcoef(test_ibp1[i], adaptive_recon[i])[0,1])
+                        if np.std(adaptive_recon[i]) > 1e-8 else 0.0 for i in range(test_n)],
+            'transfer_fn': [float(np.corrcoef(test_ibp1[i], tf_recon[i])[0,1])
+                           if np.std(tf_recon[i]) > 1e-8 else 0.0 for i in range(test_n)],
+        }
+        # Clean NaN
+        for k in corr_series:
+            corr_series[k] = [0.0 if np.isnan(v) else v for v in corr_series[k]]
+
+        # Add DL model metrics to models dict and corr_series
+        if unet_recon is not None:
+            for rname, recon in [('U-Net 1D', unet_recon), ('CNN-LSTM', lstm_recon)]:
+                if recon is not None:
+                    dl_corrs = []
+                    for i in range(test_n):
+                        c = np.corrcoef(test_ibp1[i], recon[i])[0,1]
+                        dl_corrs.append(float(c) if not np.isnan(c) else 0.0)
+                    dl_sbp = np.array([s.max() for s in recon]) + raw_ibp1_mean
+                    dl_dbp = np.array([s.min() for s in recon]) + raw_ibp1_mean
+                    models[rname] = {
+                        'sbp_mae': float(np.mean(np.abs(dl_sbp - test_true_sbp))),
+                        'dbp_mae': float(np.mean(np.abs(dl_dbp - test_true_dbp))),
+                        'wf_corr': float(np.mean(dl_corrs))
+                    }
+                    corr_series[rname.lower().replace(' ','_').replace('-','_')] = dl_corrs
+
+        # ---- Zoomed Cardiac Cycles (4s windows, 2x2 grid) & Best/Median/Worst ----
+        # Use U-Net correlation for ranking if DL available, else TF
+        if unet_recon is not None:
+            unet_corr_arr = np.array(corr_series.get('u_net_1d', [0.0]*test_n))
+            lstm_corr_arr = np.array(corr_series.get('cnn_lstm', [0.0]*test_n))
+            rank_corr = unet_corr_arr.copy()
+        else:
+            unet_corr_arr = np.zeros(test_n)
+            lstm_corr_arr = np.zeros(test_n)
+            rank_corr = np.array(corr_series['transfer_fn']).copy()
+        rank_corr[np.isnan(rank_corr)] = -1
+        sorted_idx = np.argsort(rank_corr)
+
+        best_i = int(sorted_idx[-1])
+        worst_i = int(sorted_idx[0])
+        median_i = int(sorted_idx[len(sorted_idx) // 2])
+
+        def seg_rmse(a, b):
+            return float(np.sqrt(np.mean((a - b) ** 2)))
+        def safe_corr(a, b):
+            if np.std(a) < 1e-8 or np.std(b) < 1e-8: return 0.0
+            c = np.corrcoef(a, b)[0,1]
+            return float(c) if not np.isnan(c) else 0.0
+
+        # -- Zoomed 4s cardiac windows from 4 diverse good segments --
+        top_quarter = sorted_idx[-(len(sorted_idx) // 4):]
+        pick4 = np.linspace(0, len(top_quarter) - 1, min(4, len(top_quarter)), dtype=int)
+        zoom_indices = [int(top_quarter[p]) for p in pick4]
+        zoom_win = int(SR * 4)
+
+        # Offset to shift filtered waveforms back to physiological mmHg for display
+        _off = raw_ibp1_mean
+
+        zoomed_panels = []
+        for zi in zoom_indices:
+            seg_a = test_ibp1[zi]
+            seg_ppg = test_pleth[zi]
+            mid = seg_len // 2
+            s = max(0, mid - zoom_win // 2)
+            e = min(seg_len, s + zoom_win)
+            t4 = (np.arange(e - s) / SR).tolist()
+            panel = {
+                'seg_idx': int(good_segs[train_n + zi]),
+                'time': t4,
+                'actual': (seg_a[s:e] + _off).tolist(),
+                'ppg': seg_ppg[s:e].tolist(),
+            }
+            if unet_recon is not None:
+                panel['unet'] = (unet_recon[zi][s:e] + _off).tolist()
+                panel['cnn_lstm'] = (lstm_recon[zi][s:e] + _off).tolist()
+                panel['corr_unet'] = safe_corr(seg_a[s:e], unet_recon[zi][s:e])
+                panel['rmse_unet'] = seg_rmse(seg_a[s:e], unet_recon[zi][s:e])
+                panel['corr_lstm'] = safe_corr(seg_a[s:e], lstm_recon[zi][s:e])
+                panel['rmse_lstm'] = seg_rmse(seg_a[s:e], lstm_recon[zi][s:e])
+            else:
+                panel['adaptive'] = (adaptive_recon[zi][s:e] + _off).tolist()
+                panel['transfer_fn'] = (tf_recon[zi][s:e] + _off).tolist()
+                panel['corr_adaptive'] = safe_corr(seg_a[s:e], adaptive_recon[zi][s:e])
+                panel['rmse_adaptive'] = seg_rmse(seg_a[s:e], adaptive_recon[zi][s:e])
+                panel['corr_tf'] = safe_corr(seg_a[s:e], tf_recon[zi][s:e])
+                panel['rmse_tf'] = seg_rmse(seg_a[s:e], tf_recon[zi][s:e])
+            zoomed_panels.append(panel)
+
+        # -- Best / Median / Worst full 10s segments --
+        bmw_cases = []
+        for label, idx in [('Best', best_i), ('Median', median_i), ('Worst', worst_i)]:
+            seg_a = test_ibp1[idx]
+            ds2 = 2
+            case = {
+                'label': label,
+                'seg_idx': int(good_segs[train_n + idx]),
+                'time': (np.arange(seg_len) / SR)[::ds2].tolist(),
+                'actual': (seg_a + _off)[::ds2].tolist(),
+            }
+            if unet_recon is not None:
+                case['unet'] = (unet_recon[idx] + _off)[::ds2].tolist()
+                case['cnn_lstm'] = (lstm_recon[idx] + _off)[::ds2].tolist()
+                case['corr_unet'] = safe_corr(seg_a, unet_recon[idx])
+                case['rmse_unet'] = seg_rmse(seg_a, unet_recon[idx])
+                case['corr_lstm'] = safe_corr(seg_a, lstm_recon[idx])
+                case['rmse_lstm'] = seg_rmse(seg_a, lstm_recon[idx])
+            else:
+                case['adaptive'] = (adaptive_recon[idx] + _off)[::ds2].tolist()
+                case['transfer_fn'] = (tf_recon[idx] + _off)[::ds2].tolist()
+                case['corr_adaptive'] = safe_corr(seg_a, adaptive_recon[idx])
+                case['rmse_adaptive'] = seg_rmse(seg_a, adaptive_recon[idx])
+                case['corr_tf'] = safe_corr(seg_a, tf_recon[idx])
+                case['rmse_tf'] = seg_rmse(seg_a, tf_recon[idx])
+            bmw_cases.append(case)
+
+        return {
+            'hasDL': has_dl and unet_recon is not None,
+            'nSegments': n_segs,
+            'trainN': train_n,
+            'testN': test_n,
+            'sr': SR,
+            'duration_min': float(min_len / SR / 60),
+            'sbpStats': {'mean': float(np.mean(true_sbp)), 'std': float(np.std(true_sbp))},
+            'dbpStats': {'mean': float(np.mean(true_dbp)), 'std': float(np.std(true_dbp))},
+            'models': _to_list(models),
+            'referenceModels': reference_models,
+            'zoomedPanels': _to_list(zoomed_panels),
+            'bmwCases': _to_list(bmw_cases),
+            'waveformExamples': _to_list(waveform_examples),
+            'sbpSeries': _to_list(sbp_series),
+            'dbpSeries': _to_list(dbp_series),
+            'corrSeries': _to_list(corr_series),
+        }
+    finally:
+        try: os.unlink(tmp_path)
+        except: pass
+
+
 ACTIONS = {"load": action_load, "spectrum": action_spectrum,
            "connectivity": action_connectivity, "time_conn": action_time_conn,
            "advanced": action_advanced, "save": action_save,
            "list_items": action_list_items, "get_item": action_get_item,
-           "delete_item": action_delete_item, "update_memo": action_update_memo}
+           "delete_item": action_delete_item, "update_memo": action_update_memo,
+           "ppg2abp": action_ppg2abp}
 
 
 # ── HTTP Server ─────────────────────────────────────────────
